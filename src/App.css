@@ -1071,7 +1071,7 @@ button:focus-visible {
 
 .history-item {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) auto auto;
+  grid-template-columns: minmax(180px, 0.85fr) minmax(280px, 1fr) minmax(320px, 1.2fr) auto;
   align-items: center;
   gap: 16px;
   border: 1px solid var(--line);
@@ -1094,6 +1094,37 @@ button:focus-visible {
   color: var(--muted);
   font-size: 12px;
   font-weight: 700;
+}
+
+.history-next-turn {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.history-next-turn > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.history-next-turn strong {
+  font-size: 15px;
+}
+
+.history-next-turn small {
+  display: block;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+  overflow-wrap: anywhere;
+}
+
+.history-next-turn.muted strong {
+  color: var(--muted);
 }
 
 @media (max-width: 1280px) {
@@ -1179,6 +1210,10 @@ button:focus-visible {
   }
 
   .history-item {
+    grid-template-columns: 1fr;
+  }
+
+  .history-next-turn {
     grid-template-columns: 1fr;
   }
 

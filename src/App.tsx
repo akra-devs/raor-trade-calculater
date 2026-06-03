@@ -12,13 +12,16 @@ import {
 } from './domain/dailyPrices'
 import {
   SUPPORTED_SPLITS,
+  calculateNextTurnFromExecution,
   generateOrders,
+  getDefaultTargetProfitPercent,
   getStrategyConfig,
   type GenerateOrdersResult,
+  type NextTurnCalculation,
   type Mode,
   type SplitCount,
   type StrategyState,
-type StrategySymbol,
+  type StrategySymbol,
 } from './domain/strategy'
 
 type AverageInputMode = 'costBasis' | 'averagePrice'
@@ -46,8 +49,17 @@ interface FormState {
 interface OrderSnapshot {
   id: string
   createdAt: string
+  referenceDate?: string
   input: FormState
   result: GenerateOrdersResult
+}
+
+interface NextTurnPreview {
+  referenceDate?: string
+  executionCandle?: DailyCandle
+  calculation?: NextTurnCalculation
+  isReferenceDateInferred: boolean
+  message: string
 }
 
 interface MarketDataFile {
@@ -82,7 +94,7 @@ const priceIntervalLabel: Record<PriceInterval, string> = {
 const DEFAULT_FORM: FormState = {
   symbol: 'TQQQ',
   splitCount: 20,
-  gainPercent: '15',
+  gainPercent: String(getDefaultTargetProfitPercent('TQQQ')),
   mode: 'normal',
   turn: '0',
   cashInputMode: 'cashBalance',
@@ -130,7 +142,7 @@ function App() {
       getStrategyConfig(
         form.symbol,
         form.splitCount,
-        parseNumber(form.gainPercent),
+        parseOptionalNumber(form.gainPercent),
       ),
     [form.gainPercent, form.splitCount, form.symbol],
   )
@@ -151,6 +163,10 @@ function App() {
   }, [activeDailyCandles, selectedDate])
   const selectedDailyCandle = useMemo(
     () => activeDailyCandles.find((candle) => candle.date === effectiveSelectedDate),
+    [activeDailyCandles, effectiveSelectedDate],
+  )
+  const selectedOrderDate = useMemo(
+    () => getOrderDateForReferenceDate(activeDailyCandles, effectiveSelectedDate),
     [activeDailyCandles, effectiveSelectedDate],
   )
   const dateOptions = useMemo(
@@ -224,6 +240,23 @@ function App() {
     }))
   }
 
+  function handleSymbolChange(symbol: StrategySymbol) {
+    setForm((current) => {
+      const currentDefault = getDefaultTargetProfitPercent(current.symbol)
+      const shouldApplySymbolDefault =
+        current.gainPercent.trim() === '' ||
+        parseNumber(current.gainPercent) === currentDefault
+
+      return {
+        ...current,
+        symbol,
+        gainPercent: shouldApplySymbolDefault
+          ? String(getDefaultTargetProfitPercent(symbol))
+          : current.gainPercent,
+      }
+    })
+  }
+
   function updateRecentClose(index: number, value: string) {
     setForm((current) => {
       const recentCloses = [...current.recentCloses]
@@ -241,6 +274,7 @@ function App() {
     const snapshot: OrderSnapshot = {
       id: createSnapshotId(),
       createdAt: new Date().toISOString(),
+      referenceDate: getFormReferenceDate(form, selectedDailyCandle),
       input: form,
       result: nextResult,
     }
@@ -254,9 +288,70 @@ function App() {
   }
 
   function handleRestore(snapshot: OrderSnapshot) {
-    setForm(snapshot.input)
-    setResult(snapshot.result)
-    saveFormState(snapshot.input)
+    const sortedCandles = sortDailyCandles(dailyCandles[snapshot.input.symbol] ?? [])
+    const reference = resolveSnapshotReferenceDate(snapshot, sortedCandles)
+    const nextCandle = reference.date
+      ? getNextTradingCandle(sortedCandles, reference.date)
+      : undefined
+    const nextInput = nextCandle
+      ? applyCandleToForm(snapshot.input, sortedCandles, nextCandle)
+      : snapshot.input
+    const nextResult = calculateFromForm(nextInput)
+
+    setForm(nextInput)
+    setResult(nextResult)
+    setSelectedDate(nextCandle?.date ?? snapshot.referenceDate ?? '')
+    saveFormState(nextInput)
+
+    if (nextCandle) {
+      setPriceMessage(
+        `${reference.date} 기준 주문기록을 불러오면서 기준일을 다음 거래일 ${nextCandle.date}로 이동했습니다.`,
+      )
+    }
+  }
+
+  function handleApplyNextTurn(
+    snapshot: OrderSnapshot,
+    preview: NextTurnPreview,
+  ) {
+    if (!preview.calculation || !preview.executionCandle) {
+      return
+    }
+
+    const sortedCandles = sortDailyCandles(dailyCandles[snapshot.input.symbol] ?? [])
+    const nextInput = applyCandleToForm(
+      {
+        ...snapshot.input,
+        cashInputMode: 'cashBalance',
+        cashBalance: stringifyRoundedInput(preview.calculation.nextCashBalance),
+        mode: preview.calculation.nextMode,
+        shares: String(preview.calculation.nextShares),
+        turn: stringifyRoundedInput(preview.calculation.nextTurn),
+        averageInputMode: 'averagePrice',
+        averagePrice: stringifyRoundedInput(preview.calculation.nextAveragePrice),
+        costBasis: stringifyRoundedInput(
+          preview.calculation.nextShares *
+            preview.calculation.nextAveragePrice,
+        ),
+        reverseDays: String(
+          calculateNextReverseDays(snapshot.input, preview.calculation),
+        ),
+      },
+      sortedCandles,
+      preview.executionCandle,
+    )
+
+    setForm(nextInput)
+    setSelectedDate(preview.executionCandle.date)
+    setResult(calculateFromForm(nextInput))
+    saveFormState(nextInput)
+    setPriceMessage(
+      `${snapshot.input.symbol} ${preview.executionCandle.date} 종가 기준 T ${formatNumber(
+        preview.calculation.previousTurn,
+      )} → ${formatNumber(preview.calculation.nextTurn)}, 보유 ${formatNumber(
+        preview.calculation.previousShares,
+      )}주 → ${formatNumber(preview.calculation.nextShares)}주 적용. 예외 체결은 입력값을 수정한 뒤 다시 계산하세요.`,
+    )
   }
 
   function handleReset() {
@@ -286,12 +381,48 @@ function App() {
     setResult(calculateFromForm(nextForm))
     saveFormState(nextForm)
     setPriceMessage(
-      `${selectedCandle.date} 종가 ${formatCurrency(selectedCandle.close)}를 적용했습니다.`,
+      `${selectedCandle.date} 종가 ${formatCurrency(
+        selectedCandle.close,
+      )}를 전일 종가로 적용했습니다. 주문일은 ${
+        getOrderDateForReferenceDate(sortedCandles, selectedCandle.date) ??
+        '다음 거래일'
+      }입니다.`,
     )
   }
 
   function handleRefreshYfinanceJson() {
-    void loadYfinanceJson(form.symbol)
+    void refreshYfinanceData()
+  }
+
+  async function refreshYfinanceData() {
+    setMarketDataLoading(true)
+    setPriceMessage('yfinance 최신 일봉 JSON을 생성하는 중입니다.')
+
+    try {
+      const response = await fetch('/api/fetch-market-data', {
+        method: 'POST',
+      })
+
+      if (!response.ok) {
+        const payload = await safeReadJson(response)
+        const detail = formatFetchMarketDataError(payload)
+
+        throw new Error(
+          detail || '개발 서버에서 yfinance fetch를 실행하지 못했습니다.',
+        )
+      }
+
+      await loadYfinanceJson(form.symbol)
+    } catch (error) {
+      await loadYfinanceJson(form.symbol)
+      setPriceMessage(
+        error instanceof Error
+          ? `${error.message} 정적 JSON만 다시 읽었습니다.`
+          : 'yfinance 최신 데이터를 만들지 못해 정적 JSON만 다시 읽었습니다.',
+      )
+    } finally {
+      setMarketDataLoading(false)
+    }
   }
 
   return (
@@ -303,7 +434,7 @@ function App() {
         </div>
         <div className="strategy-badges" aria-label="지원 전략">
           <span>기본 ETF TQQQ</span>
-          <span>기본 G 15%</span>
+          <span>TQQQ 15% · SOXL 20%</span>
           <span>20 / 30 / 40분할</span>
         </div>
       </header>
@@ -313,9 +444,12 @@ function App() {
           <div className="panel-heading">
             <h2 id="input-title">상태 및 데이터 입력</h2>
             <div className="history-actions">
-              <span className="panel-stat">G {selectedConfig.gainPercent}%</span>
+              <span className="panel-stat">목표 {selectedConfig.gainPercent}%</span>
               <span className="panel-stat">
-                기준일 {selectedDailyCandle?.date ?? '-'}
+                전일 {selectedDailyCandle?.date ?? '-'}
+              </span>
+              <span className="panel-stat">
+                주문일 {selectedOrderDate ?? '-'}
               </span>
             </div>
           </div>
@@ -327,7 +461,7 @@ function App() {
             >
               <div className="input-block-heading">
                 <strong id="strategy-input-title">전략 설정</strong>
-                <span>종목, 분할 수, G값, 모드와 T를 지정합니다.</span>
+                <span>종목, 분할 수, 목표수익률, 모드와 T를 지정합니다.</span>
               </div>
 
               <div className="strategy-fields">
@@ -336,7 +470,7 @@ function App() {
                   <select
                     value={form.symbol}
                     onChange={(event) =>
-                      updateField('symbol', event.target.value as StrategySymbol)
+                      handleSymbolChange(event.target.value as StrategySymbol)
                     }
                   >
                     {symbolOptions.map((symbol) => (
@@ -365,7 +499,7 @@ function App() {
 
                 <NumberField
                   id="gain-percent"
-                  label="G값"
+                  label="목표수익률"
                   value={form.gainPercent}
                   min="0"
                   step="0.1"
@@ -452,7 +586,7 @@ function App() {
             >
               <div className="input-block-heading">
                 <strong id="price-input-title">가격 기준</strong>
-                <span>전일 종가와 매수 기준일을 맞춥니다.</span>
+                <span>전일 종가와 실제 주문일을 맞춥니다.</span>
               </div>
 
               <div className="price-fields">
@@ -474,9 +608,9 @@ function App() {
                   onChange={(value) => updateField('reverseDays', value)}
                 />
 
-                <div className="market-control-band" aria-label="매수 기준일 입력">
+                <div className="market-control-band" aria-label="전일 기준일 입력">
                   <label className="field date-field">
-                    <span>매수 기준일</span>
+                    <span>전일 기준일</span>
                     <select
                       value={selectedDailyCandle?.date ?? ''}
                       disabled={dateOptions.length === 0}
@@ -487,20 +621,23 @@ function App() {
                       ) : null}
                       {dateOptions.map((candle) => (
                         <option key={candle.date} value={candle.date}>
-                          {candle.date} · 종가 {formatCurrency(candle.close)}
+                          {candle.date} · 종가 {formatCurrency(candle.close)} · 주문일{' '}
+                          {getOrderDateForReferenceDate(activeDailyCandles, candle.date) ??
+                            '다음 거래일'}
                         </option>
                       ))}
                     </select>
                   </label>
 
-                  <div className="selected-candle-card" aria-label="선택 일자 가격">
-                    <span>선택 일자</span>
+                  <div className="selected-candle-card" aria-label="선택 전일 기준과 주문일">
+                    <span>전일 기준</span>
                     <strong>
                       {selectedDailyCandle
-                        ? `${selectedDailyCandle.date} · ${formatCurrency(selectedDailyCandle.close)}`
+                        ? `${selectedDailyCandle.date} · 종가 ${formatCurrency(selectedDailyCandle.close)}`
                         : '-'}
                     </strong>
                     <div>
+                    <span>주문일 {selectedOrderDate ?? '-'}</span>
                       <span>시가 {formatOptionalCurrency(selectedDailyCandle?.open)}</span>
                       <span>고가 {formatOptionalCurrency(selectedDailyCandle?.high)}</span>
                       <span>저가 {formatOptionalCurrency(selectedDailyCandle?.low)}</span>
@@ -590,11 +727,11 @@ function App() {
               </div>
             </div>
 
-            <div className="chart-selected-summary" aria-label="선택된 매수 기준일">
-              <span>매수 기준일</span>
+            <div className="chart-selected-summary" aria-label="선택된 전일 기준일">
+              <span>전일 기준일</span>
               <strong>
                 {selectedDailyCandle
-                  ? `${selectedDailyCandle.date} · ${formatCurrency(selectedDailyCandle.close)}`
+                  ? `${selectedDailyCandle.date} · 주문일 ${selectedOrderDate ?? '-'}`
                   : '-'}
               </strong>
             </div>
@@ -646,32 +783,119 @@ function App() {
         ) : (
           <div className="history-list">
             {history.map((snapshot) => (
-              <article className="history-item" key={snapshot.id}>
-                <div>
-                  <strong>
-                    {snapshot.input.symbol} · {modeLabel(snapshot.result.summary.effectiveMode)}
-                  </strong>
-                  <span>{formatDateTime(snapshot.createdAt)}</span>
-                </div>
-                <div className="history-meta">
-                  <span>{snapshot.result.orders.length}건</span>
-                  <span>G {snapshot.input.gainPercent ?? DEFAULT_FORM.gainPercent}%</span>
-                  <span>T {snapshot.input.turn}</span>
-                  <span>{snapshot.input.splitCount}분할</span>
-                </div>
-                <button
-                  type="button"
-                  className="secondary-action compact"
-                  onClick={() => handleRestore(snapshot)}
-                >
-                  불러오기
-                </button>
-              </article>
+              <HistoryItem
+                key={snapshot.id}
+                candles={dailyCandles[snapshot.input.symbol] ?? []}
+                onApplyNextTurn={handleApplyNextTurn}
+                onRestore={handleRestore}
+                snapshot={snapshot}
+              />
             ))}
           </div>
         )}
       </section>
     </main>
+  )
+}
+
+function HistoryItem({
+  candles,
+  onApplyNextTurn,
+  onRestore,
+  snapshot,
+}: {
+  candles: DailyCandle[]
+  onApplyNextTurn: (snapshot: OrderSnapshot, preview: NextTurnPreview) => void
+  onRestore: (snapshot: OrderSnapshot) => void
+  snapshot: OrderSnapshot
+}) {
+  const preview = getNextTurnPreview(snapshot, candles)
+
+  return (
+    <article className="history-item">
+      <div>
+        <strong>
+          {snapshot.input.symbol} · {modeLabel(snapshot.result.summary.effectiveMode)}
+        </strong>
+        <span>{formatDateTime(snapshot.createdAt)}</span>
+      </div>
+      <div className="history-meta">
+        <span>{snapshot.result.orders.length}건</span>
+        <span>목표 {snapshot.input.gainPercent ?? DEFAULT_FORM.gainPercent}%</span>
+        <span>T {snapshot.input.turn}</span>
+        <span>{snapshot.input.splitCount}분할</span>
+      </div>
+      <HistoryNextTurnPreview
+        onApply={() => onApplyNextTurn(snapshot, preview)}
+        preview={preview}
+        snapshot={snapshot}
+      />
+      <button
+        type="button"
+        className="secondary-action compact"
+        onClick={() => onRestore(snapshot)}
+      >
+        불러오기
+      </button>
+    </article>
+  )
+}
+
+function HistoryNextTurnPreview({
+  onApply,
+  preview,
+  snapshot,
+}: {
+  onApply: () => void
+  preview: NextTurnPreview
+  snapshot: OrderSnapshot
+}) {
+  if (!preview.calculation || !preview.executionCandle) {
+    return (
+      <div className="history-next-turn muted">
+        <span>다음 T</span>
+        <strong>-</strong>
+        <small>{preview.message}</small>
+      </div>
+    )
+  }
+
+  const executedLabels = preview.calculation.executedOrderTags.map(
+    (tag) =>
+      snapshot.result.orders.find((order) => order.tag === tag)?.label ?? tag,
+  )
+  const executionSummary =
+    executedLabels.length > 0 ? executedLabels.join(', ') : '체결 없음'
+
+  return (
+    <div className="history-next-turn">
+      <div>
+        <span>
+          {preview.referenceDate ?? '-'} → {preview.executionCandle.date}
+        </span>
+        <strong>
+          T {formatNumber(preview.calculation.previousTurn)} →{' '}
+          {formatNumber(preview.calculation.nextTurn)} · 보유{' '}
+          {formatNumber(preview.calculation.previousShares)} →{' '}
+          {formatNumber(preview.calculation.nextShares)}주
+        </strong>
+        <small>
+          종가 {formatCurrency(preview.executionCandle.close)}
+          {preview.calculation.usedHighForLimitSell
+            ? ` · 지정가 고가 ${formatCurrency(preview.executionCandle.high)} 추정`
+            : ''}
+          {preview.isReferenceDateInferred ? ' · 기준일 추정' : ''}
+        </small>
+        <small>
+          잔금 {formatCurrency(preview.calculation.nextCashBalance)} · 평단{' '}
+          {formatCurrency(preview.calculation.nextAveragePrice)}
+        </small>
+        <small>{executionSummary}</small>
+      </div>
+      <button type="button" className="secondary-action compact" onClick={onApply}>
+        상태 적용
+      </button>
+    </div>
   )
 }
 
@@ -965,12 +1189,27 @@ function AverageInputField({
 
 function Summary({ result }: { result: GenerateOrdersResult }) {
   const { summary } = result
+  const buyBudget =
+    summary.effectiveMode === 'reverse'
+      ? summary.reverseBuyBudget
+      : summary.oneBuyAmount
+  const buyBudgetLabel =
+    summary.effectiveMode === 'reverse' ? '리버스 매수금' : '1회매수금'
+  const referenceLabel =
+    summary.effectiveMode === 'reverse' ? '5일 평균' : '전일 종가'
 
   return (
     <div className="summary-grid" aria-label="계산 요약">
       <SummaryItem label="모드" value={modeLabel(summary.effectiveMode)} />
-      <SummaryItem label="별%" value={`${formatNumber(summary.starPercent)}%`} />
-      <SummaryItem label="1회매수금" value={formatCurrency(summary.oneBuyAmount)} />
+      {summary.effectiveMode === 'normal' ? (
+        <SummaryItem label="별%" value={`${formatNumber(summary.starPercent)}%`} />
+      ) : null}
+      <SummaryItem
+        label={buyBudgetLabel}
+        value={
+          typeof buyBudget === 'number' ? formatCurrency(buyBudget) : '-'
+        }
+      />
       <SummaryItem label="목표가" value={formatOptionalCurrency(summary.targetPrice)} />
       <SummaryItem
         label="별 매도가"
@@ -980,14 +1219,8 @@ function Summary({ result }: { result: GenerateOrdersResult }) {
         label="별 매수가"
         value={formatOptionalCurrency(summary.starBuyPrice)}
       />
-      <SummaryItem label="전일 종가" value={formatOptionalCurrency(summary.referenceClose)} />
+      <SummaryItem label={referenceLabel} value={formatOptionalCurrency(summary.referenceClose)} />
       <SummaryItem label="원금 기준" value={formatCurrency(summary.capitalBase)} />
-      {summary.reverseAverageClose ? (
-        <SummaryItem
-          label="5일 평균"
-          value={formatCurrency(summary.reverseAverageClose)}
-        />
-      ) : null}
     </div>
   )
 }
@@ -1219,10 +1452,124 @@ function calculateFromForm(form: FormState): GenerateOrdersResult {
     getStrategyConfig(
       form.symbol,
       form.splitCount,
-      parseNumber(form.gainPercent),
+      parseOptionalNumber(form.gainPercent),
     ),
     formToState(form),
   )
+}
+
+function getNextTurnPreview(
+  snapshot: OrderSnapshot,
+  candles: DailyCandle[],
+): NextTurnPreview {
+  const sortedCandles = sortDailyCandles(candles)
+
+  if (sortedCandles.length === 0) {
+    return {
+      isReferenceDateInferred: false,
+      message: `${snapshot.input.symbol} 가격 데이터가 없습니다.`,
+    }
+  }
+
+  const reference = resolveSnapshotReferenceDate(snapshot, sortedCandles)
+
+  if (!reference.date) {
+    return {
+      isReferenceDateInferred: false,
+      message: '기준일을 찾을 수 없습니다.',
+    }
+  }
+
+  const referenceIndex = sortedCandles.findIndex(
+    (candle) => candle.date === reference.date,
+  )
+  const executionCandle =
+    referenceIndex >= 0 ? sortedCandles[referenceIndex + 1] : undefined
+
+  if (!executionCandle) {
+    return {
+      referenceDate: reference.date,
+      isReferenceDateInferred: reference.isInferred,
+      message: '다음 거래일 가격 데이터가 아직 없습니다.',
+    }
+  }
+
+  const calculation = calculateNextTurnFromExecution(
+    getStrategyConfig(
+      snapshot.input.symbol,
+      snapshot.input.splitCount,
+      parseOptionalNumber(snapshot.input.gainPercent),
+    ),
+    formToState(snapshot.input),
+    snapshot.result.orders,
+    {
+      close: executionCandle.close,
+      high: executionCandle.high,
+    },
+  )
+
+  if (!calculation) {
+    return {
+      referenceDate: reference.date,
+      executionCandle,
+      isReferenceDateInferred: reference.isInferred,
+      message: '다음 거래일 종가가 유효하지 않습니다.',
+    }
+  }
+
+  return {
+    referenceDate: reference.date,
+    executionCandle,
+    calculation,
+    isReferenceDateInferred: reference.isInferred,
+    message: '',
+  }
+}
+
+function resolveSnapshotReferenceDate(
+  snapshot: OrderSnapshot,
+  candles: DailyCandle[],
+): { date?: string; isInferred: boolean } {
+  const previousClose = parseNumber(snapshot.input.previousClose)
+
+  if (snapshot.referenceDate) {
+    const referencedCandle = candles.find(
+      (candle) => candle.date === snapshot.referenceDate,
+    )
+
+    if (
+      referencedCandle &&
+      isSamePrice(referencedCandle.close, previousClose)
+    ) {
+      return {
+        date: referencedCandle.date,
+        isInferred: false,
+      }
+    }
+  }
+
+  const inferredCandle = [...candles]
+    .reverse()
+    .find((candle) => isSamePrice(candle.close, previousClose))
+
+  return {
+    date: inferredCandle?.date,
+    isInferred: Boolean(inferredCandle),
+  }
+}
+
+function getFormReferenceDate(
+  form: FormState,
+  selectedDailyCandle?: DailyCandle,
+): string | undefined {
+  if (
+    selectedDailyCandle &&
+    isSamePrice(parseNumber(form.previousClose), selectedDailyCandle.close)
+  ) {
+    return selectedDailyCandle.date
+  }
+
+  return undefined
 }
 
 function applyCandleToForm(
@@ -1332,16 +1679,21 @@ function saveHistory(history: OrderSnapshot[]) {
 
 function normalizeFormState(value: unknown): FormState {
   const source = isRecord(value) ? value : {}
+  const symbol = isStrategySymbol(source.symbol) ? source.symbol : DEFAULT_FORM.symbol
+  const splitCount = isSplitCount(source.splitCount)
+    ? source.splitCount
+    : DEFAULT_FORM.splitCount
   const recentCloses = Array.isArray(source.recentCloses)
     ? source.recentCloses
     : DEFAULT_FORM.recentCloses
 
   return {
-    symbol: isStrategySymbol(source.symbol) ? source.symbol : DEFAULT_FORM.symbol,
-    splitCount: isSplitCount(source.splitCount)
-      ? source.splitCount
-      : DEFAULT_FORM.splitCount,
-    gainPercent: stringifyInput(source.gainPercent, DEFAULT_FORM.gainPercent),
+    symbol,
+    splitCount,
+    gainPercent: stringifyInput(
+      source.gainPercent,
+      String(getDefaultTargetProfitPercent(symbol)),
+    ),
     mode: isMode(source.mode) ? source.mode : DEFAULT_FORM.mode,
     turn: stringifyInput(source.turn, DEFAULT_FORM.turn),
     cashInputMode: normalizeCashInputMode(source),
@@ -1374,48 +1726,18 @@ function normalizeOrderSnapshot(value: unknown): OrderSnapshot[] {
   }
 
   const input = normalizeFormState(value.input)
-  const result = isGenerateOrdersResult(value.result)
-    ? value.result
-    : calculateFromForm(input)
+  const result = calculateFromForm(input)
 
   return [
     {
       id: value.id,
       createdAt: value.createdAt,
+      referenceDate:
+        typeof value.referenceDate === 'string' ? value.referenceDate : undefined,
       input,
       result,
     },
   ]
-}
-
-function isGenerateOrdersResult(value: unknown): value is GenerateOrdersResult {
-  if (!isRecord(value)) {
-    return false
-  }
-
-  return (
-    Array.isArray(value.orders) &&
-    Array.isArray(value.warnings) &&
-    isCalculationSummary(value.summary)
-  )
-}
-
-function isCalculationSummary(value: unknown): boolean {
-  if (!isRecord(value)) {
-    return false
-  }
-
-  return (
-    isMode(value.configuredMode) &&
-    isMode(value.effectiveMode) &&
-    typeof value.wasAutoReversed === 'boolean' &&
-    typeof value.gainPercent === 'number' &&
-    typeof value.splitCount === 'number' &&
-    typeof value.turn === 'number' &&
-    typeof value.starPercent === 'number' &&
-    typeof value.oneBuyAmount === 'number' &&
-    typeof value.capitalBase === 'number'
-  )
 }
 
 function normalizeMarketDataFileCandles(payload: MarketDataFile): DailyCandle[] {
@@ -1461,6 +1783,27 @@ function writeStorage(key: string, value: unknown) {
   } catch {
     return
   }
+}
+
+async function safeReadJson(response: Response): Promise<unknown> {
+  try {
+    return await response.json()
+  } catch {
+    return undefined
+  }
+}
+
+function formatFetchMarketDataError(value: unknown): string {
+  if (!isRecord(value)) {
+    return ''
+  }
+
+  const stderr =
+    typeof value.stderr === 'string' ? value.stderr.trim() : ''
+  const stdout =
+    typeof value.stdout === 'string' ? value.stdout.trim() : ''
+
+  return stderr || stdout
 }
 
 function stringifyInput(value: unknown, fallback: string): string {
@@ -1509,6 +1852,10 @@ function parseUnknownNumber(value: unknown): number {
   return 0
 }
 
+function isSamePrice(left: number, right: number): boolean {
+  return Math.abs(left - right) < 0.005
+}
+
 function getPreviousClose(candles: DailyCandle[], date: string): number | undefined {
   const index = candles.findIndex((candle) => candle.date === date)
 
@@ -1517,6 +1864,63 @@ function getPreviousClose(candles: DailyCandle[], date: string): number | undefi
   }
 
   return candles[index - 1].close
+}
+
+function getNextTradingCandle(
+  candles: DailyCandle[],
+  date: string,
+): DailyCandle | undefined {
+  const sortedCandles = sortDailyCandles(candles)
+  const index = sortedCandles.findIndex((candle) => candle.date === date)
+
+  if (index < 0) {
+    return undefined
+  }
+
+  return sortedCandles[index + 1]
+}
+
+function getOrderDateForReferenceDate(
+  candles: DailyCandle[],
+  date: string,
+): string | undefined {
+  const nextCandle = getNextTradingCandle(candles, date)
+
+  return nextCandle?.date ?? inferNextWeekdayDate(date)
+}
+
+function inferNextWeekdayDate(date: string): string | undefined {
+  const [year, month, day] = date.split('-').map(Number)
+  const parsed = new Date(Date.UTC(year, month - 1, day))
+
+  if (Number.isNaN(parsed.getTime())) {
+    return undefined
+  }
+
+  do {
+    parsed.setUTCDate(parsed.getUTCDate() + 1)
+  } while (parsed.getUTCDay() === 0 || parsed.getUTCDay() === 6)
+
+  return [
+    parsed.getUTCFullYear(),
+    String(parsed.getUTCMonth() + 1).padStart(2, '0'),
+    String(parsed.getUTCDate()).padStart(2, '0'),
+  ].join('-')
+}
+
+function calculateNextReverseDays(
+  input: FormState,
+  calculation: NextTurnCalculation,
+): number {
+  if (calculation.nextMode !== 'reverse') {
+    return 0
+  }
+
+  if (calculation.effectiveMode === 'reverse') {
+    return Math.max(0, Math.floor(parseNumber(input.reverseDays))) + 1
+  }
+
+  return 0
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -10,12 +10,15 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 
 DEFAULT_OUTPUT_DIR = Path("public/market-data")
+MARKET_TIMEZONE = ZoneInfo("America/New_York")
+MARKET_CLOSE_READY_TIME = time(16, 15)
 
 
 def main() -> int:
@@ -53,6 +56,11 @@ def main() -> int:
     action="store_true",
     help="Use unadjusted OHLC prices. Default output is auto-adjusted.",
   )
+  parser.add_argument(
+    "--include-current-day",
+    action="store_true",
+    help="Keep the current US trading day if yfinance returns it. Default excludes it until 16:15 New York time.",
+  )
   args = parser.parse_args()
 
   try:
@@ -82,6 +90,7 @@ def main() -> int:
         start=args.start,
         end=args.end,
         auto_adjust=not args.raw,
+        include_current_day=args.include_current_day,
       )
       output_path = output_dir / f"{normalized_symbol}.json"
       output_path.write_text(
@@ -104,6 +113,7 @@ def fetch_symbol(
   start: str | None,
   end: str | None,
   auto_adjust: bool,
+  include_current_day: bool,
 ) -> dict[str, Any]:
   ticker = yf.Ticker(symbol)
   history_kwargs: dict[str, Any] = {
@@ -131,6 +141,9 @@ def fetch_symbol(
   candles = []
   for index, row in frame.iterrows():
     date = index.strftime("%Y-%m-%d")
+    if not include_current_day and is_unfinished_current_market_day(date):
+      continue
+
     try:
       open_price = float(row["Open"])
       high_price = float(row["High"])
@@ -165,6 +178,8 @@ def fetch_symbol(
     "start": start,
     "end": end,
     "autoAdjust": auto_adjust,
+    "includeCurrentDay": include_current_day,
+    "currentDayPolicy": "include" if include_current_day else "exclude-before-ny-16:15",
     "fetchedAt": datetime.now(timezone.utc).isoformat(),
     "candles": candles,
   }
@@ -172,6 +187,16 @@ def fetch_symbol(
 
 def is_valid_price(value: float) -> bool:
   return value > 0 and value != float("inf") and value != float("-inf")
+
+
+def is_unfinished_current_market_day(candle_date: str) -> bool:
+  try:
+    parsed_date = datetime.strptime(candle_date, "%Y-%m-%d").date()
+  except ValueError:
+    return False
+
+  now = datetime.now(MARKET_TIMEZONE)
+  return parsed_date == now.date() and now.time() < MARKET_CLOSE_READY_TIME
 
 
 if __name__ == "__main__":
