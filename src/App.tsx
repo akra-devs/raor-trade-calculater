@@ -81,6 +81,7 @@ interface NumberFieldProps {
 }
 
 const STORAGE_INPUT_KEY = 'raor:v1:input'
+const STORAGE_SYMBOL_INPUTS_KEY = 'raor:v1:symbol-inputs'
 const STORAGE_HISTORY_KEY = 'raor:v1:order-snapshots'
 const PRICE_TABLE_PAGE_SIZE = 5
 
@@ -112,6 +113,14 @@ const DEFAULT_FORM: FormState = {
 
 const symbolOptions: StrategySymbol[] = ['TQQQ', 'SOXL']
 
+function createDefaultFormForSymbol(symbol: StrategySymbol): FormState {
+  return {
+    ...DEFAULT_FORM,
+    symbol,
+    gainPercent: String(getDefaultTargetProfitPercent(symbol)),
+  }
+}
+
 const currencyFormatter = new Intl.NumberFormat('en-US', {
   style: 'currency',
   currency: 'USD',
@@ -124,8 +133,11 @@ const numberFormatter = new Intl.NumberFormat('ko-KR', {
 
 function App() {
   const [form, setForm] = useState<FormState>(() => loadFormState())
+  const [symbolForms, setSymbolForms] = useState<Record<StrategySymbol, FormState>>(
+    () => loadSymbolFormStates(form),
+  )
   const [result, setResult] = useState<GenerateOrdersResult>(() =>
-    calculateFromForm(loadFormState()),
+    calculateFromForm(form),
   )
   const [isResultModalOpen, setIsResultModalOpen] = useState(false)
   const [history, setHistory] = useState<OrderSnapshot[]>(() => loadHistory())
@@ -159,8 +171,14 @@ function App() {
       return selectedDate
     }
 
+    const inferredDate = inferSelectedDateFromForm(form, activeDailyCandles)
+
+    if (inferredDate) {
+      return inferredDate
+    }
+
     return activeDailyCandles.at(-1)?.date ?? ''
-  }, [activeDailyCandles, selectedDate])
+  }, [activeDailyCandles, form, selectedDate])
   const selectedDailyCandle = useMemo(
     () => activeDailyCandles.find((candle) => candle.date === effectiveSelectedDate),
     [activeDailyCandles, effectiveSelectedDate],
@@ -241,20 +259,38 @@ function App() {
   }
 
   function handleSymbolChange(symbol: StrategySymbol) {
-    setForm((current) => {
-      const currentDefault = getDefaultTargetProfitPercent(current.symbol)
-      const shouldApplySymbolDefault =
-        current.gainPercent.trim() === '' ||
-        parseNumber(current.gainPercent) === currentDefault
+    if (symbol === form.symbol) {
+      return
+    }
 
-      return {
-        ...current,
-        symbol,
-        gainPercent: shouldApplySymbolDefault
-          ? String(getDefaultTargetProfitPercent(symbol))
-          : current.gainPercent,
-      }
+    const currentSymbolForms = {
+      ...symbolForms,
+      [form.symbol]: form,
+    }
+    const nextForm = currentSymbolForms[symbol] ?? createDefaultFormForSymbol(symbol)
+    const normalizedNextForm = normalizeFormState({
+      ...nextForm,
+      symbol,
     })
+    const nextSymbolForms = {
+      ...currentSymbolForms,
+      [symbol]: normalizedNextForm,
+    }
+
+    setForm(normalizedNextForm)
+    setSymbolForms(nextSymbolForms)
+    setResult(calculateFromForm(normalizedNextForm))
+    setSelectedDate(
+      inferSelectedDateFromForm(
+        normalizedNextForm,
+        dailyCandles[normalizedNextForm.symbol] ?? [],
+      ),
+    )
+    saveFormState(normalizedNextForm)
+    saveSymbolFormStates(nextSymbolForms)
+    setPriceMessage(
+      `${symbol} 전용 상태를 불러왔습니다. T, 잔금, 보유수량, 평단은 종목별로 분리됩니다.`,
+    )
   }
 
   function updateRecentClose(index: number, value: string) {
@@ -283,7 +319,7 @@ function App() {
     setResult(nextResult)
     setIsResultModalOpen(true)
     setHistory(nextHistory)
-    saveFormState(form)
+    persistFormState(form)
     saveHistory(nextHistory)
   }
 
@@ -301,7 +337,7 @@ function App() {
     setForm(nextInput)
     setResult(nextResult)
     setSelectedDate(nextCandle?.date ?? snapshot.referenceDate ?? '')
-    saveFormState(nextInput)
+    persistFormState(nextInput)
 
     if (nextCandle) {
       setPriceMessage(
@@ -344,7 +380,7 @@ function App() {
     setForm(nextInput)
     setSelectedDate(preview.executionCandle.date)
     setResult(calculateFromForm(nextInput))
-    saveFormState(nextInput)
+    persistFormState(nextInput)
     setPriceMessage(
       `${snapshot.input.symbol} ${preview.executionCandle.date} 종가 기준 T ${formatNumber(
         preview.calculation.previousTurn,
@@ -355,9 +391,13 @@ function App() {
   }
 
   function handleReset() {
-    setForm(DEFAULT_FORM)
-    setResult(calculateFromForm(DEFAULT_FORM))
+    const nextForm = createDefaultFormForSymbol(form.symbol)
+
+    setForm(nextForm)
+    setSelectedDate('')
+    setResult(calculateFromForm(nextForm))
     setIsResultModalOpen(false)
+    persistFormState(nextForm)
   }
 
   function handleClearHistory() {
@@ -379,7 +419,7 @@ function App() {
     setSelectedDate(selectedCandle.date)
     setForm(nextForm)
     setResult(calculateFromForm(nextForm))
-    saveFormState(nextForm)
+    persistFormState(nextForm)
     setPriceMessage(
       `${selectedCandle.date} 종가 ${formatCurrency(
         selectedCandle.close,
@@ -388,6 +428,17 @@ function App() {
         '다음 거래일'
       }입니다.`,
     )
+  }
+
+  function persistFormState(nextForm: FormState) {
+    const nextSymbolForms = {
+      ...symbolForms,
+      [nextForm.symbol]: nextForm,
+    }
+
+    setSymbolForms(nextSymbolForms)
+    saveFormState(nextForm)
+    saveSymbolFormStates(nextSymbolForms)
   }
 
   function handleRefreshYfinanceJson() {
@@ -1593,6 +1644,19 @@ function applyCandleToForm(
   }
 }
 
+function inferSelectedDateFromForm(
+  form: FormState,
+  candles: DailyCandle[],
+): string {
+  const previousClose = parseNumber(form.previousClose)
+
+  return (
+    [...sortDailyCandles(candles)]
+      .reverse()
+      .find((candle) => isSamePrice(candle.close, previousClose))?.date ?? ''
+  )
+}
+
 function getEffectiveAveragePrice(form: FormState): string {
   if (form.averageInputMode === 'averagePrice') {
     return form.averagePrice
@@ -1661,6 +1725,34 @@ function loadFormState(): FormState {
 
 function saveFormState(form: FormState) {
   writeStorage(STORAGE_INPUT_KEY, form)
+}
+
+function loadSymbolFormStates(
+  activeForm: FormState,
+): Record<StrategySymbol, FormState> {
+  const saved = readStorage(STORAGE_SYMBOL_INPUTS_KEY)
+  const forms = Object.fromEntries(
+    symbolOptions.map((symbol) => [symbol, createDefaultFormForSymbol(symbol)]),
+  ) as Record<StrategySymbol, FormState>
+
+  if (isRecord(saved)) {
+    for (const symbol of symbolOptions) {
+      if (isRecord(saved[symbol])) {
+        forms[symbol] = normalizeFormState({
+          ...saved[symbol],
+          symbol,
+        })
+      }
+    }
+  }
+
+  forms[activeForm.symbol] = normalizeFormState(activeForm)
+
+  return forms
+}
+
+function saveSymbolFormStates(forms: Record<StrategySymbol, FormState>) {
+  writeStorage(STORAGE_SYMBOL_INPUTS_KEY, forms)
 }
 
 function loadHistory(): OrderSnapshot[] {
