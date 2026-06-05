@@ -63,9 +63,12 @@ interface NextTurnPreview {
 }
 
 interface MarketDataFile {
+  calendar?: string
   provider?: string
   symbol?: string
   fetchedAt?: string
+  missingTradingDays?: string[]
+  skippedClosedDays?: string[]
   candles?: unknown
 }
 
@@ -226,9 +229,7 @@ function App() {
         ...current,
         [symbol]: candles,
       }))
-      setPriceMessage(
-        `${symbol} ${candles.length}개 일봉을 불러왔습니다. 출처: ${payload.provider ?? 'yfinance'}`,
-      )
+      setPriceMessage(formatMarketDataLoadMessage(symbol, payload, candles.length))
     } catch (error) {
       setDailyCandles((current) => ({
         ...current,
@@ -1858,6 +1859,24 @@ function normalizeMarketDataCandles(value: unknown): DailyCandle[] {
       return candle ? [candle] : []
     }),
   )
+}
+
+function formatMarketDataLoadMessage(
+  symbol: StrategySymbol,
+  payload: MarketDataFile,
+  candleCount: number,
+): string {
+  const calendarLabel = payload.calendar ? ` · ${payload.calendar} 캘린더 검증` : ''
+  const sourceLabel = payload.provider ?? 'yfinance'
+  const missingTradingDays = Array.isArray(payload.missingTradingDays)
+    ? payload.missingTradingDays.filter((date) => typeof date === 'string')
+    : []
+
+  if (missingTradingDays.length > 0) {
+    return `${symbol} ${candleCount}개 일봉을 불러왔습니다. 정상 거래일 데이터 누락: ${missingTradingDays.join(', ')}`
+  }
+
+  return `${symbol} ${candleCount}개 일봉을 불러왔습니다. 출처: ${sourceLabel}${calendarLabel}`
 }
 
 function readStorage(key: string): unknown {
