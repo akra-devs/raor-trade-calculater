@@ -11,6 +11,12 @@ import {
   type PriceInterval,
 } from './domain/dailyPrices'
 import {
+  TRADE_COST_RATE,
+  calculateProfitLoss,
+  type ExecutedProfitLossOrder,
+  type ProfitLossResult,
+} from './domain/profitLoss'
+import {
   SUPPORTED_SPLITS,
   calculateNextTurnFromExecution,
   generateOrders,
@@ -51,6 +57,7 @@ interface OrderSnapshot {
   createdAt: string
   referenceDate?: string
   input: FormState
+  profitLoss?: ProfitLossResult
   result: GenerateOrdersResult
 }
 
@@ -313,6 +320,11 @@ function App() {
       createdAt: new Date().toISOString(),
       referenceDate: getFormReferenceDate(form, selectedDailyCandle),
       input: form,
+      profitLoss: calculateSnapshotProfitLoss({
+        input: form,
+        result: nextResult,
+        valuationCandle: selectedDailyCandle,
+      }),
       result: nextResult,
     }
     const nextHistory = [snapshot, ...history].slice(0, 50)
@@ -862,6 +874,7 @@ function HistoryItem({
   snapshot: OrderSnapshot
 }) {
   const preview = getNextTurnPreview(snapshot, candles)
+  const profitLoss = getHistoryProfitLoss(snapshot, candles, preview)
 
   return (
     <article className="history-item">
@@ -877,6 +890,7 @@ function HistoryItem({
         <span>T {snapshot.input.turn}</span>
         <span>{snapshot.input.splitCount}분할</span>
       </div>
+      <HistoryProfitLoss profitLoss={profitLoss} />
       <HistoryNextTurnPreview
         onApply={() => onApplyNextTurn(snapshot, preview)}
         preview={preview}
@@ -890,6 +904,42 @@ function HistoryItem({
         불러오기
       </button>
     </article>
+  )
+}
+
+function HistoryProfitLoss({
+  profitLoss,
+}: {
+  profitLoss?: ProfitLossResult
+}) {
+  if (!profitLoss) {
+    return (
+      <div className="history-pnl-card muted">
+        <span>누적손익</span>
+        <strong>-</strong>
+        <small>예산과 기준가를 확인하세요</small>
+      </div>
+    )
+  }
+
+  const tone =
+    profitLoss.totalProfitLoss > 0
+      ? 'positive'
+      : profitLoss.totalProfitLoss < 0
+        ? 'negative'
+        : 'neutral'
+
+  return (
+    <div className={`history-pnl-card ${tone}`}>
+      <span>누적손익</span>
+      <strong>{formatSignedCurrency(profitLoss.totalProfitLoss)}</strong>
+      <small>예산대비 {formatSignedPercent(profitLoss.budgetReturnPercent)}</small>
+      <small>
+        {profitLoss.markDate ?? '기준가'} · {formatNumber(TRADE_COST_RATE * 100)}%
+        비용 {formatCurrency(profitLoss.totalFees)} · 체결추정{' '}
+        {profitLoss.executedOrderCount}건
+      </small>
+    </div>
   )
 }
 
@@ -1074,7 +1124,7 @@ function CashBalanceInputField({
       ? initialBudgetValue - (totalBuyAmountValue ?? 0)
       : undefined
   const helperText = isDirectMode
-    ? '입력한 잔금을 그대로 적용합니다'
+    ? '잔금은 주문 계산에, 예산은 손익률 기준에 사용합니다'
     : typeof rawRemainingCash === 'number' && rawRemainingCash < 0
       ? `총매수금액이 예산을 ${formatCurrency(Math.abs(rawRemainingCash))} 초과했습니다`
       : '최초예산에서 총매수금액을 차감합니다'
@@ -1104,20 +1154,36 @@ function CashBalanceInputField({
       </div>
 
       {isDirectMode ? (
-        <label className="switch-input-shell" htmlFor="cash-balance">
-          <span>잔금</span>
-          <input
-            id="cash-balance"
-            type="number"
-            inputMode="decimal"
-            min="0"
-            step="0.01"
-            placeholder="예: 32000"
-            value={cashBalance}
-            onChange={(event) => onCashBalanceChange(event.target.value)}
-          />
-          <em>$</em>
-        </label>
+        <div className="formula-input-grid direct-cash-grid">
+          <label className="switch-input-shell" htmlFor="cash-balance">
+            <span>잔금</span>
+            <input
+              id="cash-balance"
+              type="number"
+              inputMode="decimal"
+              min="0"
+              step="0.01"
+              placeholder="예: 32000"
+              value={cashBalance}
+              onChange={(event) => onCashBalanceChange(event.target.value)}
+            />
+            <em>$</em>
+          </label>
+          <label className="switch-input-shell" htmlFor="direct-initial-budget">
+            <span>손익 기준 예산</span>
+            <input
+              id="direct-initial-budget"
+              type="number"
+              inputMode="decimal"
+              min="0"
+              step="0.01"
+              placeholder="예: 40000"
+              value={initialBudget}
+              onChange={(event) => onInitialBudgetChange(event.target.value)}
+            />
+            <em>$</em>
+          </label>
+        </div>
       ) : (
         <div className="formula-input-grid">
           <label className="switch-input-shell" htmlFor="initial-budget">
@@ -1578,6 +1644,80 @@ function getNextTurnPreview(
   }
 }
 
+function getHistoryProfitLoss(
+  snapshot: OrderSnapshot,
+  candles: DailyCandle[],
+  preview: NextTurnPreview,
+): ProfitLossResult | undefined {
+  const sortedCandles = sortDailyCandles(candles)
+  const reference = resolveSnapshotReferenceDate(snapshot, sortedCandles)
+  const valuationCandle = reference.date
+    ? sortedCandles.find((candle) => candle.date === reference.date)
+    : undefined
+  const executionCandle =
+    preview.calculation && preview.executionCandle
+      ? preview.executionCandle
+      : undefined
+
+  return (
+    calculateSnapshotProfitLoss({
+      executionCandle,
+      input: snapshot.input,
+      result: snapshot.result,
+      valuationCandle,
+    }) ?? snapshot.profitLoss
+  )
+}
+
+function calculateSnapshotProfitLoss({
+  executionCandle,
+  input,
+  result,
+  valuationCandle,
+}: {
+  executionCandle?: DailyCandle
+  input: FormState
+  result: GenerateOrdersResult
+  valuationCandle?: DailyCandle
+}): ProfitLossResult | undefined {
+  const markPrice =
+    executionCandle?.close ??
+    valuationCandle?.close ??
+    result.summary.referenceClose ??
+    parseNumber(input.previousClose)
+  const budget = getProfitLossBudget(input, result)
+
+  return calculateProfitLoss({
+    averagePrice: parseNumber(getEffectiveAveragePrice(input)),
+    budget,
+    cashBalance: parseNumber(getEffectiveCashBalance(input)),
+    executionPrice: executionCandle
+      ? {
+          close: executionCandle.close,
+          date: executionCandle.date,
+          high: executionCandle.high,
+        }
+      : undefined,
+    markDate: valuationCandle?.date,
+    markPrice,
+    orders: result.orders,
+    shares: parseNumber(input.shares),
+  })
+}
+
+function getProfitLossBudget(
+  input: FormState,
+  result: GenerateOrdersResult,
+): number {
+  const initialBudget = parseOptionalNumber(input.initialBudget)
+
+  if (typeof initialBudget === 'number' && initialBudget > 0) {
+    return initialBudget
+  }
+
+  return result.summary.capitalBase
+}
+
 function resolveSnapshotReferenceDate(
   snapshot: OrderSnapshot,
   candles: DailyCandle[],
@@ -1820,6 +1960,12 @@ function normalizeOrderSnapshot(value: unknown): OrderSnapshot[] {
 
   const input = normalizeFormState(value.input)
   const result = calculateFromForm(input)
+  const profitLoss =
+    normalizeProfitLossResult(value.profitLoss) ??
+    calculateSnapshotProfitLoss({
+      input,
+      result,
+    })
 
   return [
     {
@@ -1828,7 +1974,73 @@ function normalizeOrderSnapshot(value: unknown): OrderSnapshot[] {
       referenceDate:
         typeof value.referenceDate === 'string' ? value.referenceDate : undefined,
       input,
+      profitLoss,
       result,
+    },
+  ]
+}
+
+function normalizeProfitLossResult(value: unknown): ProfitLossResult | undefined {
+  if (!isRecord(value)) {
+    return undefined
+  }
+
+  const budget = parseUnknownNumber(value.budget)
+  const budgetReturnPercent = parseUnknownNumber(value.budgetReturnPercent)
+  const cashBalanceAfterOrders = parseUnknownNumber(value.cashBalanceAfterOrders)
+  const executedOrderCount = parseUnknownNumber(value.executedOrderCount)
+  const markPrice = parseUnknownNumber(value.markPrice)
+  const netEquity = parseUnknownNumber(value.netEquity)
+  const positionExitFee = parseUnknownNumber(value.positionExitFee)
+  const positionValue = parseUnknownNumber(value.positionValue)
+  const remainingShares = parseUnknownNumber(value.remainingShares)
+  const totalFees = parseUnknownNumber(value.totalFees)
+  const totalProfitLoss = parseUnknownNumber(value.totalProfitLoss)
+
+  if (budget <= 0 || markPrice <= 0) {
+    return undefined
+  }
+
+  return {
+    budget,
+    budgetReturnPercent,
+    cashBalanceAfterOrders,
+    executedOrderCount: Math.max(0, Math.floor(executedOrderCount)),
+    executedOrders: Array.isArray(value.executedOrders)
+      ? value.executedOrders.flatMap(normalizeExecutedProfitLossOrder)
+      : [],
+    markDate: typeof value.markDate === 'string' ? value.markDate : undefined,
+    markPrice,
+    netEquity,
+    positionExitFee,
+    positionValue,
+    remainingShares,
+    totalFees,
+    totalProfitLoss,
+  }
+}
+
+function normalizeExecutedProfitLossOrder(
+  value: unknown,
+): ExecutedProfitLossOrder[] {
+  if (!isRecord(value)) {
+    return []
+  }
+
+  const side: ExecutedProfitLossOrder['side'] | undefined =
+    value.side === 'buy' || value.side === 'sell' ? value.side : undefined
+  const label = typeof value.label === 'string' ? value.label : ''
+
+  if (!side || !label) {
+    return []
+  }
+
+  return [
+    {
+      fee: parseUnknownNumber(value.fee),
+      label,
+      notional: parseUnknownNumber(value.notional),
+      side,
     },
   ]
 }
@@ -2101,8 +2313,26 @@ function formatOptionalCurrency(value?: number): string {
   return typeof value === 'number' ? formatCurrency(value) : '-'
 }
 
+function formatSignedCurrency(value: number): string {
+  if (value === 0) {
+    return formatCurrency(0)
+  }
+
+  const sign = value > 0 ? '+' : '-'
+  return `${sign}${formatCurrency(Math.abs(value))}`
+}
+
 function formatNumber(value: number): string {
   return numberFormatter.format(value)
+}
+
+function formatSignedPercent(value: number): string {
+  if (value === 0) {
+    return '0%'
+  }
+
+  const sign = value > 0 ? '+' : '-'
+  return `${sign}${formatNumber(Math.abs(value))}%`
 }
 
 function formatChange(value?: number): string {

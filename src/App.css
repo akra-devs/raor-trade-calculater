@@ -404,6 +404,10 @@ select:focus {
   min-width: 0;
 }
 
+.direct-cash-grid {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
 .formula-divider {
   display: grid;
   place-items: center;
@@ -1071,7 +1075,7 @@ button:focus-visible {
 
 .history-item {
   display: grid;
-  grid-template-columns: minmax(180px, 0.85fr) minmax(280px, 1fr) minmax(320px, 1.2fr) auto;
+  grid-template-columns: minmax(170px, 0.72fr) minmax(210px, 0.82fr) minmax(220px, 0.9fr) minmax(320px, 1.18fr) auto;
   align-items: center;
   gap: 16px;
   border: 1px solid var(--line);
@@ -1094,6 +1098,52 @@ button:focus-visible {
   color: var(--muted);
   font-size: 12px;
   font-weight: 700;
+}
+
+.history-pnl-card {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.history-pnl-card strong {
+  font-size: 16px;
+}
+
+.history-pnl-card small {
+  display: block;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.history-pnl-card.positive {
+  border-color: rgba(4, 120, 87, 0.2);
+  background: rgba(223, 246, 237, 0.56);
+}
+
+.history-pnl-card.positive strong {
+  color: var(--buy);
+}
+
+.history-pnl-card.negative {
+  border-color: rgba(180, 35, 24, 0.2);
+  background: rgba(253, 231, 228, 0.58);
+}
+
+.history-pnl-card.negative strong {
+  color: var(--sell);
+}
+
+.history-pnl-card.neutral strong,
+.history-pnl-card.muted strong {
+  color: var(--muted);
 }
 
 .history-next-turn {
