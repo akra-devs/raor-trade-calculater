@@ -17,6 +17,8 @@ describe('profit loss calculation', () => {
     expect(result).toEqual({
       budget: 10_000,
       budgetReturnPercent: 4.9725,
+      buyAmount: 5_000,
+      buyAmountReturnPercent: 9.945,
       cashBalanceAfterOrders: 5_000,
       executedOrderCount: 0,
       executedOrders: [],
@@ -77,5 +79,7 @@ describe('profit loss calculation', () => {
     expect(result?.totalFees).toBe(3.8)
     expect(result?.totalProfitLoss).toBe(516.2)
     expect(result?.budgetReturnPercent).toBe(5.162)
+    expect(result?.buyAmount).toBe(6_040.52)
+    expect(result?.buyAmountReturnPercent).toBe(8.5456)
   })
 })

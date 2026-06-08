@@ -5,6 +5,7 @@ export const TRADE_COST_RATE = 0.0005
 export interface ProfitLossInput {
   averagePrice: number
   budget: number
+  buyAmount?: number
   cashBalance: number
   executionPrice?: {
     close: number
@@ -27,6 +28,8 @@ export interface ExecutedProfitLossOrder {
 export interface ProfitLossResult {
   budget: number
   budgetReturnPercent: number
+  buyAmount: number
+  buyAmountReturnPercent?: number
   cashBalanceAfterOrders: number
   executedOrderCount: number
   executedOrders: ExecutedProfitLossOrder[]
@@ -58,6 +61,8 @@ export function calculateProfitLoss(
   let shares = normalizeShares(input.shares)
   let costBasis =
     shares > 0 ? shares * normalizePositiveMoney(input.averagePrice) : 0
+  let buyAmount =
+    normalizePositiveMoney(input.buyAmount ?? 0) || normalizePositiveMoney(costBasis)
   const executedProfitLossOrders: ExecutedProfitLossOrder[] = []
   let orderFees = 0
 
@@ -81,6 +86,7 @@ export function calculateProfitLoss(
       cashBalance -= notional + fee
       shares += quantity
       costBasis += notional + fee
+      buyAmount += notional + fee
       orderFees += fee
       executedProfitLossOrders.push({
         fee: roundMoney(fee),
@@ -126,6 +132,9 @@ export function calculateProfitLoss(
   return {
     budget: roundMoney(budget),
     budgetReturnPercent: roundPercent((totalProfitLoss / budget) * 100),
+    buyAmount: roundMoney(buyAmount),
+    buyAmountReturnPercent:
+      buyAmount > 0 ? roundPercent((totalProfitLoss / buyAmount) * 100) : undefined,
     cashBalanceAfterOrders: roundMoney(cashBalance),
     executedOrderCount: executedProfitLossOrders.length,
     executedOrders: executedProfitLossOrders,

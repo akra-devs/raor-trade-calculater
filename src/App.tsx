@@ -1037,6 +1037,9 @@ function HistoryProfitLoss({
       <span>누적손익</span>
       <strong>{formatSignedCurrency(profitLoss.totalProfitLoss)}</strong>
       <small>예산대비 {formatSignedPercent(profitLoss.budgetReturnPercent)}</small>
+      {typeof profitLoss.buyAmountReturnPercent === 'number' ? (
+        <small>매수금액대비 {formatSignedPercent(profitLoss.buyAmountReturnPercent)}</small>
+      ) : null}
       <small>
         {profitLoss.markDate ?? '기준가'} · {formatNumber(TRADE_COST_RATE * 100)}%
         비용 {formatCurrency(profitLoss.totalFees)} · 체결추정{' '}
@@ -1865,6 +1868,7 @@ function calculateSnapshotProfitLoss({
   return calculateProfitLoss({
     averagePrice: parseNumber(getEffectiveAveragePrice(input)),
     budget,
+    buyAmount: getProfitLossBuyAmount(input),
     cashBalance: parseNumber(getEffectiveCashBalance(input)),
     executionPrice: executionCandle
       ? {
@@ -1891,6 +1895,29 @@ function getProfitLossBudget(
   }
 
   return result.summary.capitalBase
+}
+
+function getProfitLossBuyAmount(input: FormState): number {
+  const totalBuyAmount = parseOptionalNumber(input.totalBuyAmount)
+
+  if (typeof totalBuyAmount === 'number' && totalBuyAmount > 0) {
+    return totalBuyAmount
+  }
+
+  const costBasis = parseOptionalNumber(input.costBasis)
+
+  if (typeof costBasis === 'number' && costBasis > 0) {
+    return costBasis
+  }
+
+  const shares = parseNumber(input.shares)
+  const averagePrice = parseNumber(getEffectiveAveragePrice(input))
+
+  if (shares > 0 && averagePrice > 0) {
+    return shares * averagePrice
+  }
+
+  return 0
 }
 
 function resolveSnapshotReferenceDate(
@@ -2162,6 +2189,10 @@ function normalizeProfitLossResult(value: unknown): ProfitLossResult | undefined
 
   const budget = parseUnknownNumber(value.budget)
   const budgetReturnPercent = parseUnknownNumber(value.budgetReturnPercent)
+  const buyAmount = parseUnknownNumber(value.buyAmount)
+  const buyAmountReturnPercent = parseOptionalUnknownNumber(
+    value.buyAmountReturnPercent,
+  )
   const cashBalanceAfterOrders = parseUnknownNumber(value.cashBalanceAfterOrders)
   const executedOrderCount = parseUnknownNumber(value.executedOrderCount)
   const markPrice = parseUnknownNumber(value.markPrice)
@@ -2179,6 +2210,13 @@ function normalizeProfitLossResult(value: unknown): ProfitLossResult | undefined
   return {
     budget,
     budgetReturnPercent,
+    buyAmount: Math.max(0, buyAmount),
+    buyAmountReturnPercent:
+      typeof buyAmountReturnPercent === 'number'
+        ? buyAmountReturnPercent
+        : buyAmount > 0
+          ? (totalProfitLoss / buyAmount) * 100
+          : undefined,
     cashBalanceAfterOrders,
     executedOrderCount: Math.max(0, Math.floor(executedOrderCount)),
     executedOrders: Array.isArray(value.executedOrders)
@@ -2348,6 +2386,19 @@ function parseUnknownNumber(value: unknown): number {
   }
 
   return 0
+}
+
+function parseOptionalUnknownNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value
+  }
+
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : undefined
+  }
+
+  return undefined
 }
 
 function isSamePrice(left: number, right: number): boolean {
