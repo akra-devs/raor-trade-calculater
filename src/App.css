@@ -580,6 +580,19 @@ button {
   color: var(--sell);
 }
 
+.icon-action {
+  display: inline-grid;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  min-height: 32px;
+  padding: 0;
+}
+
+.trash-icon {
+  display: block;
+}
+
 .compact {
   min-height: 32px;
   padding: 0 12px;
@@ -1197,12 +1210,28 @@ button:focus-visible {
 
 .history-item-actions {
   display: grid;
+  grid-template-areas:
+    "restore restore"
+    "detail delete";
+  grid-template-columns: minmax(0, 1fr) 34px;
   gap: 8px;
-  min-width: 116px;
+  min-width: 132px;
 }
 
 .history-item-actions button {
   width: 100%;
+}
+
+.restore-action {
+  grid-area: restore;
+}
+
+.detail-action {
+  grid-area: detail;
+}
+
+.delete-action {
+  grid-area: delete;
 }
 
 .history-next-turn {
