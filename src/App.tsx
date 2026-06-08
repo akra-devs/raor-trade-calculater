@@ -79,6 +79,18 @@ interface MarketDataFile {
   candles?: unknown
 }
 
+interface ResultModalPayload {
+  eyebrow: string
+  title: string
+  result: GenerateOrdersResult
+}
+
+interface NoticeModalPayload {
+  details?: string[]
+  message: string
+  title: string
+}
+
 interface NumberFieldProps {
   id: string
   label: string
@@ -146,10 +158,8 @@ function App() {
   const [symbolForms, setSymbolForms] = useState<Record<StrategySymbol, FormState>>(
     () => loadSymbolFormStates(form),
   )
-  const [result, setResult] = useState<GenerateOrdersResult>(() =>
-    calculateFromForm(form),
-  )
-  const [isResultModalOpen, setIsResultModalOpen] = useState(false)
+  const [resultModal, setResultModal] = useState<ResultModalPayload | null>(null)
+  const [noticeModal, setNoticeModal] = useState<NoticeModalPayload | null>(null)
   const [history, setHistory] = useState<OrderSnapshot[]>(() => loadHistory())
   const [dailyCandles, setDailyCandles] = useState<
     Record<StrategySymbol, DailyCandle[]>
@@ -287,7 +297,6 @@ function App() {
 
     setForm(normalizedNextForm)
     setSymbolForms(nextSymbolForms)
-    setResult(calculateFromForm(normalizedNextForm))
     setSelectedDate(
       inferSelectedDateFromForm(
         normalizedNextForm,
@@ -329,34 +338,33 @@ function App() {
     }
     const nextHistory = [snapshot, ...history].slice(0, 50)
 
-    setResult(nextResult)
-    setIsResultModalOpen(true)
+    setResultModal({
+      eyebrow: '오늘 주문 계산 결과',
+      result: nextResult,
+      title: '생성 주문',
+    })
     setHistory(nextHistory)
     persistFormState(form)
     saveHistory(nextHistory)
   }
 
   function handleRestore(snapshot: OrderSnapshot) {
-    const sortedCandles = sortDailyCandles(dailyCandles[snapshot.input.symbol] ?? [])
-    const reference = resolveSnapshotReferenceDate(snapshot, sortedCandles)
-    const nextCandle = reference.date
-      ? getNextTradingCandle(sortedCandles, reference.date)
-      : undefined
-    const nextInput = nextCandle
-      ? applyCandleToForm(snapshot.input, sortedCandles, nextCandle)
-      : snapshot.input
-    const nextResult = calculateFromForm(nextInput)
+    const nextInput = snapshot.input
 
     setForm(nextInput)
-    setResult(nextResult)
-    setSelectedDate(nextCandle?.date ?? snapshot.referenceDate ?? '')
+    setSelectedDate(snapshot.referenceDate ?? '')
     persistFormState(nextInput)
-
-    if (nextCandle) {
-      setPriceMessage(
-        `${reference.date} 기준 주문기록을 불러오면서 기준일을 다음 거래일 ${nextCandle.date}로 이동했습니다.`,
-      )
-    }
+    setPriceMessage(`${snapshot.input.symbol} 저장 기록의 입력값을 불러왔습니다.`)
+    setNoticeModal({
+      details: [
+        `기록 시각 ${formatDateTime(snapshot.createdAt)}`,
+        `종목 ${snapshot.input.symbol} · T ${snapshot.input.turn} · ${snapshot.input.splitCount}분할`,
+        `전일 종가 ${formatOptionalCurrency(parseOptionalNumber(snapshot.input.previousClose))}`,
+      ],
+      message:
+        '저장된 기록의 입력값을 계산기 폼에 다시 넣었습니다. 체결 추정이나 다음 상태 변경은 하지 않았습니다.',
+      title: '입력값을 불러왔습니다',
+    })
   }
 
   function handleApplyNextTurn(
@@ -392,7 +400,6 @@ function App() {
 
     setForm(nextInput)
     setSelectedDate(preview.executionCandle.date)
-    setResult(calculateFromForm(nextInput))
     persistFormState(nextInput)
     setPriceMessage(
       `${snapshot.input.symbol} ${preview.executionCandle.date} 종가 기준 T ${formatNumber(
@@ -401,6 +408,25 @@ function App() {
         preview.calculation.previousShares,
       )}주 → ${formatNumber(preview.calculation.nextShares)}주 적용. 예외 체결은 입력값을 수정한 뒤 다시 계산하세요.`,
     )
+    setNoticeModal({
+      details: [
+        `${preview.executionCandle.date} 종가 ${formatCurrency(preview.executionCandle.close)} 기준`,
+        `T ${formatNumber(preview.calculation.previousTurn)} → ${formatNumber(preview.calculation.nextTurn)}`,
+        `보유 ${formatNumber(preview.calculation.previousShares)}주 → ${formatNumber(preview.calculation.nextShares)}주`,
+        `잔금 ${formatCurrency(preview.calculation.nextCashBalance)} · 평단 ${formatCurrency(preview.calculation.nextAveragePrice)}`,
+      ],
+      message:
+        '다음 거래일 가격으로 주문 체결을 추정해 계산기 입력 상태에 반영했습니다. 실제 체결과 다르면 입력값을 직접 조정하세요.',
+      title: '체결 추정이 반영되었습니다',
+    })
+  }
+
+  function handleShowHistoryOrders(snapshot: OrderSnapshot) {
+    setResultModal({
+      eyebrow: `${snapshot.input.symbol} 저장 기록`,
+      result: snapshot.result,
+      title: '주문 상세 계획',
+    })
   }
 
   function handleReset() {
@@ -408,14 +434,21 @@ function App() {
 
     setForm(nextForm)
     setSelectedDate('')
-    setResult(calculateFromForm(nextForm))
-    setIsResultModalOpen(false)
+    setResultModal(null)
+    setNoticeModal(null)
     persistFormState(nextForm)
   }
 
   function handleClearHistory() {
     setHistory([])
     saveHistory([])
+  }
+
+  function handleDeleteHistoryItem(snapshotId: string) {
+    const nextHistory = history.filter((snapshot) => snapshot.id !== snapshotId)
+
+    setHistory(nextHistory)
+    saveHistory(nextHistory)
   }
 
   function handleSelectDate(date: string) {
@@ -431,7 +464,6 @@ function App() {
 
     setSelectedDate(selectedCandle.date)
     setForm(nextForm)
-    setResult(calculateFromForm(nextForm))
     persistFormState(nextForm)
     setPriceMessage(
       `${selectedCandle.date} 종가 ${formatCurrency(
@@ -756,10 +788,21 @@ function App() {
         </section>
       </div>
 
-      {isResultModalOpen ? (
+      {resultModal ? (
         <ResultModal
-          onClose={() => setIsResultModalOpen(false)}
-          result={result}
+          eyebrow={resultModal.eyebrow}
+          onClose={() => setResultModal(null)}
+          result={resultModal.result}
+          title={resultModal.title}
+        />
+      ) : null}
+
+      {noticeModal ? (
+        <NoticeModal
+          details={noticeModal.details}
+          message={noticeModal.message}
+          onClose={() => setNoticeModal(null)}
+          title={noticeModal.title}
         />
       ) : null}
 
@@ -851,7 +894,9 @@ function App() {
                 key={snapshot.id}
                 candles={dailyCandles[snapshot.input.symbol] ?? []}
                 onApplyNextTurn={handleApplyNextTurn}
+                onDelete={handleDeleteHistoryItem}
                 onRestore={handleRestore}
+                onShowOrders={handleShowHistoryOrders}
                 snapshot={snapshot}
               />
             ))}
@@ -865,12 +910,16 @@ function App() {
 function HistoryItem({
   candles,
   onApplyNextTurn,
+  onDelete,
   onRestore,
+  onShowOrders,
   snapshot,
 }: {
   candles: DailyCandle[]
   onApplyNextTurn: (snapshot: OrderSnapshot, preview: NextTurnPreview) => void
+  onDelete: (snapshotId: string) => void
   onRestore: (snapshot: OrderSnapshot) => void
+  onShowOrders: (snapshot: OrderSnapshot) => void
   snapshot: OrderSnapshot
 }) {
   const preview = getNextTurnPreview(snapshot, candles)
@@ -896,13 +945,30 @@ function HistoryItem({
         preview={preview}
         snapshot={snapshot}
       />
-      <button
-        type="button"
-        className="secondary-action compact"
-        onClick={() => onRestore(snapshot)}
-      >
-        불러오기
-      </button>
+      <div className="history-item-actions">
+        <button
+          type="button"
+          className="secondary-action compact"
+          onClick={() => onRestore(snapshot)}
+        >
+          입력값 불러오기
+        </button>
+        <button
+          type="button"
+          className="secondary-action compact"
+          onClick={() => onShowOrders(snapshot)}
+        >
+          주문 상세
+        </button>
+        <button
+          type="button"
+          className="text-action danger-action"
+          aria-label={`${snapshot.input.symbol} ${formatDateTime(snapshot.createdAt)} 주문 기록 삭제`}
+          onClick={() => onDelete(snapshot.id)}
+        >
+          삭제
+        </button>
+      </div>
     </article>
   )
 }
@@ -995,18 +1061,22 @@ function HistoryNextTurnPreview({
         <small>{executionSummary}</small>
       </div>
       <button type="button" className="secondary-action compact" onClick={onApply}>
-        상태 적용
+        체결 추정 반영
       </button>
     </div>
   )
 }
 
 function ResultModal({
+  eyebrow,
   onClose,
   result,
+  title,
 }: {
+  eyebrow: string
   onClose: () => void
   result: GenerateOrdersResult
+  title: string
 }) {
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -1043,8 +1113,8 @@ function ResultModal({
       >
         <div className="result-modal-head">
           <div>
-            <span>오늘 주문 계산 결과</span>
-            <h2 id="result-modal-title">생성 주문</h2>
+            <span>{eyebrow}</span>
+            <h2 id="result-modal-title">{title}</h2>
           </div>
           <div className="result-modal-actions">
             <span className="panel-stat">{result.orders.length}건</span>
@@ -1058,6 +1128,74 @@ function ResultModal({
           <Summary result={result} />
           <Warnings result={result} />
           <OrdersTable result={result} />
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function NoticeModal({
+  details,
+  message,
+  onClose,
+  title,
+}: {
+  details?: string[]
+  message: string
+  onClose: () => void
+  title: string
+}) {
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        onClose()
+      }
+    }
+
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    window.addEventListener('keydown', handleKeyDown)
+
+    return () => {
+      document.body.style.overflow = previousOverflow
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [onClose])
+
+  return (
+    <div
+      className="result-modal-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) {
+          onClose()
+        }
+      }}
+    >
+      <section
+        aria-labelledby="notice-modal-title"
+        aria-modal="true"
+        className="result-modal notice-modal"
+        role="dialog"
+      >
+        <div className="result-modal-head notice-modal-head">
+          <div>
+            <span>저장된 주문 기록</span>
+            <h2 id="notice-modal-title">{title}</h2>
+          </div>
+          <button type="button" className="secondary-action compact" onClick={onClose}>
+            닫기
+          </button>
+        </div>
+        <div className="notice-modal-body">
+          <p>{message}</p>
+          {details && details.length > 0 ? (
+            <div className="notice-detail-list">
+              {details.map((detail) => (
+                <span key={detail}>{detail}</span>
+              ))}
+            </div>
+          ) : null}
         </div>
       </section>
     </div>
