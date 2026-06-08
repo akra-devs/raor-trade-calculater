@@ -36,6 +36,9 @@ const CHART_HEIGHT = 420
 const MOBILE_CHART_MAX_WIDTH = 520
 const MOBILE_VISIBLE_BARS = 84
 const MOBILE_RIGHT_OFFSET = 4
+const HOVER_TOOLTIP_WIDTH = 178
+const HOVER_TOOLTIP_HEIGHT = 82
+const HOVER_TOOLTIP_OFFSET = 12
 const movingAverageLines = [
   { period: 5, label: 'MA5', color: '#2563eb', width: 1 },
   { period: 20, label: 'MA20', color: '#d97706', width: 2 },
@@ -64,6 +67,21 @@ interface BollingerOverlayPath {
   width: number
 }
 
+interface ChartHoverTooltip {
+  change?: number
+  changePercent?: number
+  close: number
+  date: string
+  tone: 'negative' | 'neutral' | 'positive'
+  x: number
+  y: number
+}
+
+interface CandleLookupItem {
+  candle: DailyCandle
+  previousClose?: number
+}
+
 export function CandlestickChart({
   candles,
   intervalLabel,
@@ -80,10 +98,12 @@ export function CandlestickChart({
   const rsiSeriesRef = useRef<ISeriesApi<'Line'> | null>(null)
   const markerRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null)
   const onSelectDateRef = useRef(onSelectDate)
+  const candleLookupRef = useRef<Map<string, CandleLookupItem>>(new Map())
   const chartDataLengthRef = useRef(0)
   const bollingerClipId = `bollinger-band-${useId().replace(/:/g, '')}`
   const [bollingerOverlay, setBollingerOverlay] =
     useState<BollingerOverlayPath | null>(null)
+  const [hoverTooltip, setHoverTooltip] = useState<ChartHoverTooltip | null>(null)
   const chartData = useMemo<CandlestickData[]>(
     () =>
       candles.map((candle) => ({
@@ -254,6 +274,11 @@ export function CandlestickChart({
         onSelectDateRef.current(date)
       }
     }
+    const handleCrosshairMove = (param: MouseEventParams) => {
+      setHoverTooltip(
+        createHoverTooltip(param, candleLookupRef.current, container),
+      )
+    }
     let overlayFrame = 0
     let disposed = false
     const updateBollingerOverlay = () => {
@@ -312,6 +337,7 @@ export function CandlestickChart({
       container.clientWidth,
     )
     chart.subscribeClick(handleClick)
+    chart.subscribeCrosshairMove(handleCrosshairMove)
     chart.timeScale().subscribeVisibleLogicalRangeChange(updateBollingerOverlay)
     resizeObserver.observe(container)
     chartRef.current = chart
@@ -326,6 +352,7 @@ export function CandlestickChart({
       disposed = true
       window.cancelAnimationFrame(overlayFrame)
       chart.unsubscribeClick(handleClick)
+      chart.unsubscribeCrosshairMove(handleCrosshairMove)
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(updateBollingerOverlay)
       selectedDateMarkers.detach()
       resizeObserver.disconnect()
@@ -341,6 +368,7 @@ export function CandlestickChart({
 
   useEffect(() => {
     bollingerPointsRef.current = bollingerPoints
+    candleLookupRef.current = createCandleLookup(candles)
     chartDataLengthRef.current = chartData.length
     seriesRef.current?.setData(chartData)
     movingAverageRefs.current.forEach((series, index) => {
@@ -376,7 +404,7 @@ export function CandlestickChart({
     })
 
     return () => window.cancelAnimationFrame(frame)
-  }, [bollingerBandData, bollingerPoints, chartData, movingAverageData, rsiData])
+  }, [bollingerBandData, bollingerPoints, candles, chartData, movingAverageData, rsiData])
 
   useEffect(() => {
     const chart = chartRef.current
@@ -456,6 +484,24 @@ export function CandlestickChart({
               <path className="bb-edge" d={bollingerOverlay.lowerPath} />
             </g>
           </svg>
+        ) : null}
+        {hoverTooltip ? (
+          <div
+            className={`chart-hover-tooltip ${hoverTooltip.tone}`}
+            style={{
+              left: `${hoverTooltip.x}px`,
+              top: `${hoverTooltip.y}px`,
+            }}
+          >
+            <span>{hoverTooltip.date}</span>
+            <strong>종가 {formatChartCurrency(hoverTooltip.close)}</strong>
+            <em>
+              {typeof hoverTooltip.change === 'number' &&
+              typeof hoverTooltip.changePercent === 'number'
+                ? `전봉대비 ${formatSignedCurrency(hoverTooltip.change)} (${formatSignedPercent(hoverTooltip.changePercent)})`
+                : '전봉대비 -'}
+            </em>
+          </div>
         ) : null}
         {candles.length === 0 ? (
           <div className="chart-empty">yfinance 데이터를 불러오면 차트가 표시됩니다.</div>
@@ -584,6 +630,81 @@ function roundSvgCoordinate(value: number): number {
   return Math.round(value * 10) / 10
 }
 
+function createCandleLookup(candles: DailyCandle[]): Map<string, CandleLookupItem> {
+  const lookup = new Map<string, CandleLookupItem>()
+
+  candles.forEach((candle, index) => {
+    lookup.set(candle.date, {
+      candle,
+      previousClose: candles[index - 1]?.close,
+    })
+  })
+
+  return lookup
+}
+
+function createHoverTooltip(
+  param: MouseEventParams,
+  candles: Map<string, CandleLookupItem>,
+  container: HTMLDivElement,
+): ChartHoverTooltip | null {
+  const date = normalizeChartTime(param.time)
+
+  if (!date || !param.point) {
+    return null
+  }
+
+  const item = candles.get(date)
+
+  if (!item) {
+    return null
+  }
+
+  const previousClose = item.previousClose
+  const change =
+    typeof previousClose === 'number' && previousClose > 0
+      ? item.candle.close - previousClose
+    : undefined
+  const changePercent =
+    typeof change === 'number' && typeof previousClose === 'number'
+      ? (change / previousClose) * 100
+      : undefined
+  const tone =
+    typeof change === 'number' && change > 0
+      ? 'positive'
+      : typeof change === 'number' && change < 0
+        ? 'negative'
+        : 'neutral'
+
+  return {
+    change,
+    changePercent,
+    close: item.candle.close,
+    date,
+    tone,
+    x: clamp(
+      param.point.x + HOVER_TOOLTIP_OFFSET,
+      HOVER_TOOLTIP_OFFSET,
+      Math.max(
+        HOVER_TOOLTIP_OFFSET,
+        container.clientWidth - HOVER_TOOLTIP_WIDTH - HOVER_TOOLTIP_OFFSET,
+      ),
+    ),
+    y: clamp(
+      param.point.y + HOVER_TOOLTIP_OFFSET,
+      HOVER_TOOLTIP_OFFSET,
+      Math.max(
+        HOVER_TOOLTIP_OFFSET,
+        container.clientHeight - HOVER_TOOLTIP_HEIGHT - HOVER_TOOLTIP_OFFSET,
+      ),
+    ),
+  }
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max)
+}
+
 function normalizeChartTime(time: MouseEventParams['time']): string | undefined {
   if (typeof time === 'string') {
     return time
@@ -618,6 +739,28 @@ function formatBollingerBandValue(value?: BollingerBandPoint): string {
   }
 
   return `${formatIndicatorValue(value.upper, '$')} / ${formatIndicatorValue(value.lower, '$')}`
+}
+
+function formatChartCurrency(value: number): string {
+  return `$${value.toFixed(2)}`
+}
+
+function formatSignedCurrency(value: number): string {
+  if (Math.abs(value) < 0.005) {
+    return '$0.00'
+  }
+
+  const sign = value > 0 ? '+' : '-'
+  return `${sign}$${Math.abs(value).toFixed(2)}`
+}
+
+function formatSignedPercent(value: number): string {
+  if (Math.abs(value) < 0.005) {
+    return '0.00%'
+  }
+
+  const sign = value > 0 ? '+' : '-'
+  return `${sign}${Math.abs(value).toFixed(2)}%`
 }
 
 function formatIndicatorValue(value?: number, prefix = ''): string {
