@@ -92,16 +92,6 @@ interface NoticeModalPayload {
   title: string
 }
 
-interface ExecutionFormState {
-  date: string
-  feeRate: string
-  note: string
-  price: string
-  quantity: string
-  side: ExecutionSide
-  symbol: StrategySymbol
-}
-
 interface ExecutionRecord {
   id: string
   createdAt: string
@@ -147,7 +137,6 @@ const STORAGE_EXECUTIONS_KEY = 'raor:v1:executions'
 const PRICE_TABLE_PAGE_SIZE = 5
 const HISTORY_PAGE_SIZE = 4
 const EXECUTION_RECORD_LIMIT = 500
-const DEFAULT_EXECUTION_FEE_PERCENT = TRADE_COST_RATE * 100
 
 const priceIntervalLabel: Record<PriceInterval, string> = {
   day: '일봉',
@@ -185,18 +174,6 @@ function createDefaultFormForSymbol(symbol: StrategySymbol): FormState {
   }
 }
 
-function createDefaultExecutionForm(symbol: StrategySymbol): ExecutionFormState {
-  return {
-    date: createTodayInputDate(),
-    feeRate: stringifyRoundedInput(DEFAULT_EXECUTION_FEE_PERCENT),
-    note: '',
-    price: '',
-    quantity: '',
-    side: 'buy',
-    symbol,
-  }
-}
-
 const currencyFormatter = new Intl.NumberFormat('en-US', {
   style: 'currency',
   currency: 'USD',
@@ -216,9 +193,6 @@ function App() {
   const [noticeModal, setNoticeModal] = useState<NoticeModalPayload | null>(null)
   const [history, setHistory] = useState<OrderSnapshot[]>(() => loadHistory())
   const [historyPage, setHistoryPage] = useState(1)
-  const [executionForm, setExecutionForm] = useState<ExecutionFormState>(() =>
-    createDefaultExecutionForm(form.symbol),
-  )
   const [executions, setExecutions] = useState<ExecutionRecord[]>(() =>
     loadExecutions(),
   )
@@ -339,16 +313,6 @@ function App() {
     value: FormState[Key],
   ) {
     setForm((current) => ({
-      ...current,
-      [key]: value,
-    }))
-  }
-
-  function updateExecutionField<Key extends keyof ExecutionFormState>(
-    key: Key,
-    value: ExecutionFormState[Key],
-  ) {
-    setExecutionForm((current) => ({
       ...current,
       [key]: value,
     }))
@@ -567,29 +531,6 @@ function App() {
       ),
     )
     saveHistory(nextHistory)
-  }
-
-  function handleAddExecution() {
-    const record = createExecutionRecord(executionForm)
-
-    if (!record) {
-      setNoticeModal({
-        message: '체결일자, 가격, 수량을 확인하세요. 가격과 수량은 0보다 커야 합니다.',
-        title: '체결 기록을 추가하지 못했습니다',
-      })
-      return
-    }
-
-    const nextExecutions = [record, ...executions].slice(0, EXECUTION_RECORD_LIMIT)
-
-    setExecutions(nextExecutions)
-    saveExecutions(nextExecutions)
-    setExecutionForm((current) => ({
-      ...current,
-      note: '',
-      price: '',
-      quantity: '',
-    }))
   }
 
   function handleDeleteExecution(recordId: string) {
@@ -1070,33 +1011,21 @@ function App() {
       </section>
 
       <ExecutionLedgerSection
-        form={executionForm}
         records={executions}
         onClear={handleClearExecutions}
         onDelete={handleDeleteExecution}
-        onSubmit={handleAddExecution}
-        onUpdate={updateExecutionField}
       />
     </main>
   )
 }
 
 function ExecutionLedgerSection({
-  form,
   onClear,
   onDelete,
-  onSubmit,
-  onUpdate,
   records,
 }: {
-  form: ExecutionFormState
   onClear: () => void
   onDelete: (recordId: string) => void
-  onSubmit: () => void
-  onUpdate: <Key extends keyof ExecutionFormState>(
-    key: Key,
-    value: ExecutionFormState[Key],
-  ) => void
   records: ExecutionRecord[]
 }) {
   const summary = useMemo(() => calculateExecutionSummary(records), [records])
@@ -1117,106 +1046,6 @@ function ExecutionLedgerSection({
           </button>
         </div>
       </div>
-
-      <form
-        className="execution-form"
-        onSubmit={(event) => {
-          event.preventDefault()
-          onSubmit()
-        }}
-      >
-        <label className="field" htmlFor="execution-date">
-          <span>체결일자</span>
-          <input
-            id="execution-date"
-            type="date"
-            value={form.date}
-            onChange={(event) => onUpdate('date', event.target.value)}
-          />
-        </label>
-
-        <label className="field" htmlFor="execution-symbol">
-          <span>종목</span>
-          <select
-            id="execution-symbol"
-            value={form.symbol}
-            onChange={(event) =>
-              onUpdate('symbol', event.target.value as StrategySymbol)
-            }
-          >
-            {symbolOptions.map((symbol) => (
-              <option key={symbol} value={symbol}>
-                {symbol}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <div className="field execution-side-field">
-          <span>구분</span>
-          <div className="segmented" role="group" aria-label="체결 구분">
-            <button
-              type="button"
-              className={form.side === 'buy' ? 'active' : ''}
-              onClick={() => onUpdate('side', 'buy')}
-            >
-              매수
-            </button>
-            <button
-              type="button"
-              className={form.side === 'sell' ? 'active' : ''}
-              onClick={() => onUpdate('side', 'sell')}
-            >
-              매도
-            </button>
-          </div>
-        </div>
-
-        <NumberField
-          id="execution-price"
-          label="가격"
-          min="0"
-          step="0.01"
-          suffix="$"
-          value={form.price}
-          onChange={(value) => onUpdate('price', value)}
-        />
-
-        <NumberField
-          id="execution-quantity"
-          label="수량"
-          min="0"
-          step="1"
-          suffix="주"
-          value={form.quantity}
-          onChange={(value) => onUpdate('quantity', value)}
-        />
-
-        <NumberField
-          id="execution-fee-rate"
-          label="비용률"
-          min="0"
-          step="0.01"
-          suffix="%"
-          value={form.feeRate}
-          onChange={(value) => onUpdate('feeRate', value)}
-        />
-
-        <label className="field execution-note-field" htmlFor="execution-note">
-          <span>메모</span>
-          <input
-            id="execution-note"
-            type="text"
-            placeholder="예: 장마감 LOC 체결"
-            value={form.note}
-            onChange={(event) => onUpdate('note', event.target.value)}
-          />
-        </label>
-
-        <button type="submit" className="primary-action execution-submit">
-          추가
-        </button>
-      </form>
 
       <div className="execution-summary-grid" aria-label="체결 요약">
         <SummaryItem label="매수금액" value={formatCurrency(summary.buyAmount)} />
@@ -2569,35 +2398,6 @@ function saveExecutions(records: ExecutionRecord[]) {
   writeStorage(STORAGE_EXECUTIONS_KEY, records)
 }
 
-function createExecutionRecord(form: ExecutionFormState): ExecutionRecord | undefined {
-  const date = normalizeDateInput(form.date)
-  const price = parseNumber(form.price)
-  const quantity = parseNumber(form.quantity)
-
-  if (!date || price <= 0 || quantity <= 0) {
-    return undefined
-  }
-
-  const side = normalizeExecutionSide(form.side) ?? 'buy'
-  const feeRate = Math.max(0, parseNumber(form.feeRate) / 100)
-  const amounts = calculateExecutionAmounts(side, price, quantity, feeRate)
-
-  return {
-    id: createSnapshotId(),
-    createdAt: new Date().toISOString(),
-    date,
-    feeAmount: amounts.feeAmount,
-    feeRate,
-    grossAmount: amounts.grossAmount,
-    netCashFlow: amounts.netCashFlow,
-    note: form.note.trim() || undefined,
-    price: roundMoney(price),
-    quantity: roundQuantity(quantity),
-    side,
-    symbol: form.symbol,
-  }
-}
-
 function createExecutionRecordsFromPreview(
   snapshot: OrderSnapshot,
   preview: NextTurnPreview,
@@ -3175,16 +2975,6 @@ function normalizeDateInput(value: string): string | undefined {
   }
 
   return value
-}
-
-function createTodayInputDate(): string {
-  const now = new Date()
-
-  return [
-    now.getFullYear(),
-    String(now.getMonth() + 1).padStart(2, '0'),
-    String(now.getDate()).padStart(2, '0'),
-  ].join('-')
 }
 
 function normalizeCashInputMode(source: Record<string, unknown>): CashInputMode {

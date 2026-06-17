@@ -1331,30 +1331,6 @@ button:focus-visible {
   color: var(--muted);
 }
 
-.execution-form {
-  display: grid;
-  grid-template-columns: minmax(150px, 0.85fr) minmax(120px, 0.65fr) minmax(150px, 0.75fr) repeat(3, minmax(130px, 0.8fr)) minmax(220px, 1.2fr) auto;
-  align-items: end;
-  gap: 12px;
-  min-width: 0;
-  padding: 14px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--soft);
-}
-
-.execution-side-field .segmented {
-  min-height: 42px;
-}
-
-.execution-note-field input {
-  min-width: 0;
-}
-
-.execution-submit {
-  min-width: 76px;
-}
-
 .execution-summary-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -1463,18 +1439,6 @@ button:focus-visible {
     grid-template-columns: 1fr;
   }
 
-  .execution-form {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .execution-note-field {
-    grid-column: 1 / -1;
-  }
-
-  .execution-submit {
-    width: 100%;
-  }
-
   .execution-summary-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -1553,7 +1517,6 @@ button:focus-visible {
 @media (max-width: 520px) {
   .form-grid,
   .summary-grid,
-  .execution-form,
   .execution-summary-grid,
   .close-grid,
   .strategy-fields,
