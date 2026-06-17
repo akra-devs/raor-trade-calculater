@@ -93,6 +93,7 @@ interface NoticeModalPayload {
 }
 
 interface ExecutionRecord {
+  averagePriceAfter?: number
   id: string
   createdAt: string
   date: string
@@ -104,12 +105,14 @@ interface ExecutionRecord {
   price: number
   quantity: number
   side: ExecutionSide
+  sharesAfter?: number
   sourceOrderId?: string
   sourceSnapshotId?: string
   symbol: StrategySymbol
 }
 
 interface ExecutionSummary {
+  averagePrice?: number
   buyAmount: number
   buyQuantity: number
   feeAmount: number
@@ -309,6 +312,81 @@ function App() {
 
     return () => window.clearTimeout(timer)
   }, [form.symbol, loadYfinanceJson])
+
+  useEffect(() => {
+    if (executions.length === 0 || history.length === 0) {
+      return
+    }
+
+    const metadataByKey = new Map<
+      string,
+      Pick<ExecutionRecord, 'averagePriceAfter' | 'sharesAfter'>
+    >()
+
+    for (const snapshot of history) {
+      const preview = getNextTurnPreview(
+        snapshot,
+        dailyCandles[snapshot.input.symbol] ?? [],
+      )
+
+      for (const record of createExecutionRecordsFromPreview(snapshot, preview)) {
+        const key = getExecutionSourceKey(record)
+
+        if (
+          key &&
+          typeof record.averagePriceAfter === 'number' &&
+          record.averagePriceAfter > 0 &&
+          typeof record.sharesAfter === 'number' &&
+          record.sharesAfter > 0
+        ) {
+          metadataByKey.set(key, {
+            averagePriceAfter: record.averagePriceAfter,
+            sharesAfter: record.sharesAfter,
+          })
+        }
+      }
+    }
+
+    if (metadataByKey.size === 0) {
+      return
+    }
+
+    let didUpdate = false
+    const nextExecutions = executions.map((record) => {
+      const key = getExecutionSourceKey(record)
+      const metadata = key ? metadataByKey.get(key) : undefined
+
+      if (!metadata) {
+        return record
+      }
+
+      if (
+        record.averagePriceAfter === metadata.averagePriceAfter &&
+        record.sharesAfter === metadata.sharesAfter
+      ) {
+        return record
+      }
+
+      didUpdate = true
+
+      return {
+        ...record,
+        averagePriceAfter: metadata.averagePriceAfter,
+        sharesAfter: metadata.sharesAfter,
+      }
+    })
+
+    if (!didUpdate) {
+      return
+    }
+
+    const timer = window.setTimeout(() => {
+      setExecutions(nextExecutions)
+      saveExecutions(nextExecutions)
+    }, 0)
+
+    return () => window.clearTimeout(timer)
+  }, [dailyCandles, executions, history])
 
   function updateField<Key extends keyof FormState>(
     key: Key,
@@ -1158,6 +1236,7 @@ function ExecutionLedgerSection({
         <SummaryItem label="매수 체결액" value={formatCurrency(summary.buyAmount)} />
         <SummaryItem label="매도 체결액" value={formatCurrency(summary.sellAmount)} />
         <SummaryItem label="수량" value={formatSignedShares(summary.netQuantity)} />
+        <SummaryItem label="추정 평단가" value={formatOptionalCurrency(summary.averagePrice)} />
         <SummaryItem label="거래비용" value={formatCurrency(summary.feeAmount)} />
         <SummaryItem
           label="잔금 변화"
@@ -2526,6 +2605,7 @@ function createExecutionRecordsFromPreview(
     return []
   }
 
+  const calculation = preview.calculation
   const executedTags = new Set(preview.calculation.executedOrderTags)
   const executionCandle = preview.executionCandle
   const createdAt = new Date().toISOString()
@@ -2555,6 +2635,7 @@ function createExecutionRecordsFromPreview(
 
     return [
       {
+        averagePriceAfter: calculation.nextAveragePrice,
         id: createSnapshotId(),
         createdAt,
         date: executionCandle.date,
@@ -2566,6 +2647,7 @@ function createExecutionRecordsFromPreview(
         price,
         quantity,
         side: order.side,
+        sharesAfter: calculation.nextShares,
         sourceOrderId: order.id,
         sourceSnapshotId: snapshot.id,
         symbol: snapshot.input.symbol,
@@ -2618,9 +2700,15 @@ function normalizeExecutionRecord(value: unknown): ExecutionRecord[] {
 
   const feeRate = Math.max(0, parseUnknownNumber(value.feeRate))
   const amounts = calculateExecutionAmounts(side, price, quantity, feeRate)
+  const averagePriceAfter = parseOptionalUnknownNumber(value.averagePriceAfter)
+  const sharesAfter = parseOptionalUnknownNumber(value.sharesAfter)
 
   return [
     {
+      averagePriceAfter:
+        typeof averagePriceAfter === 'number' && averagePriceAfter > 0
+          ? roundMoney(averagePriceAfter)
+          : undefined,
       id: typeof value.id === 'string' ? value.id : createSnapshotId(),
       createdAt:
         typeof value.createdAt === 'string'
@@ -2637,6 +2725,10 @@ function normalizeExecutionRecord(value: unknown): ExecutionRecord[] {
       price: roundMoney(price),
       quantity: roundQuantity(quantity),
       side,
+      sharesAfter:
+        typeof sharesAfter === 'number' && sharesAfter > 0
+          ? roundQuantity(sharesAfter)
+          : undefined,
       sourceOrderId:
         typeof value.sourceOrderId === 'string'
           ? value.sourceOrderId
@@ -2671,33 +2763,57 @@ function calculateExecutionAmounts(
 }
 
 function calculateExecutionSummary(records: ExecutionRecord[]): ExecutionSummary {
-  return records.reduce<ExecutionSummary>(
-    (summary, record) => {
-      if (record.side === 'buy') {
-        summary.buyAmount += record.grossAmount
-        summary.buyQuantity += record.quantity
-        summary.netQuantity += record.quantity
-      } else {
-        summary.sellAmount += record.grossAmount
-        summary.sellQuantity += record.quantity
-        summary.netQuantity -= record.quantity
+  const summary: ExecutionSummary = {
+    buyAmount: 0,
+    buyQuantity: 0,
+    feeAmount: 0,
+    netCashFlow: 0,
+    netQuantity: 0,
+    sellAmount: 0,
+    sellQuantity: 0,
+  }
+  let costBasis = 0
+  let positionQuantity = 0
+
+  for (const record of [...records].reverse()) {
+    if (record.side === 'buy') {
+      summary.buyAmount += record.grossAmount
+      summary.buyQuantity += record.quantity
+      summary.netQuantity += record.quantity
+      positionQuantity += record.quantity
+      costBasis += record.grossAmount + record.feeAmount
+    } else {
+      summary.sellAmount += record.grossAmount
+      summary.sellQuantity += record.quantity
+      summary.netQuantity -= record.quantity
+
+      const matchedSellQuantity = Math.min(record.quantity, positionQuantity)
+
+      if (matchedSellQuantity > 0 && positionQuantity > 0) {
+        costBasis *= (positionQuantity - matchedSellQuantity) / positionQuantity
+        positionQuantity -= matchedSellQuantity
       }
+    }
 
-      summary.feeAmount += record.feeAmount
-      summary.netCashFlow += record.netCashFlow
+    summary.feeAmount += record.feeAmount
+    summary.netCashFlow += record.netCashFlow
+  }
 
-      return summary
-    },
-    {
-      buyAmount: 0,
-      buyQuantity: 0,
-      feeAmount: 0,
-      netCashFlow: 0,
-      netQuantity: 0,
-      sellAmount: 0,
-      sellQuantity: 0,
-    },
+  const latestPositionRecord = records.find(
+    (record) =>
+      typeof record.averagePriceAfter === 'number' &&
+      record.averagePriceAfter > 0 &&
+      typeof record.sharesAfter === 'number' &&
+      record.sharesAfter > 0,
   )
+
+  if (latestPositionRecord?.averagePriceAfter) {
+    summary.averagePrice = roundMoney(latestPositionRecord.averagePriceAfter)
+  } else if (positionQuantity > 0 && costBasis > 0) {
+    summary.averagePrice = roundMoney(costBasis / positionQuantity)
+  }
+
+  return summary
 }
 
 function normalizeFormState(value: unknown): FormState {
