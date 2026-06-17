@@ -441,18 +441,9 @@ function App() {
       preview.executionCandle,
     )
     const executionRecords = createExecutionRecordsFromPreview(snapshot, preview)
-    const existingExecutionKeys = new Set(
-      executions
-        .filter((record) => record.sourceSnapshotId && record.sourceOrderId)
-        .map((record) => `${record.sourceSnapshotId}:${record.sourceOrderId}`),
-    )
-    const newExecutionRecords = executionRecords.filter(
-      (record) =>
-        !record.sourceSnapshotId ||
-        !record.sourceOrderId ||
-        !existingExecutionKeys.has(
-          `${record.sourceSnapshotId}:${record.sourceOrderId}`,
-        ),
+    const newExecutionRecords = filterNewExecutionRecords(
+      executionRecords,
+      executions,
     )
 
     if (newExecutionRecords.length > 0) {
@@ -493,6 +484,85 @@ function App() {
       message:
         '다음 거래일 가격으로 주문 체결을 추정해 계산기 입력 상태와 체결 목록에 반영했습니다. 실제 체결과 다르면 입력값이나 체결 기록을 직접 조정하세요.',
       title: '체결 추정이 반영되었습니다',
+    })
+  }
+
+  function handleApplyAllHistoryExecutions() {
+    let readySnapshotCount = 0
+    let noExecutionSnapshotCount = 0
+    const executionRecords: ExecutionRecord[] = []
+
+    for (const snapshot of history) {
+      const preview = getNextTurnPreview(
+        snapshot,
+        dailyCandles[snapshot.input.symbol] ?? [],
+      )
+
+      if (!preview.calculation || !preview.executionCandle) {
+        continue
+      }
+
+      readySnapshotCount += 1
+
+      const snapshotExecutionRecords = createExecutionRecordsFromPreview(
+        snapshot,
+        preview,
+      )
+
+      if (snapshotExecutionRecords.length === 0) {
+        noExecutionSnapshotCount += 1
+      }
+
+      executionRecords.push(...snapshotExecutionRecords)
+    }
+
+    const newExecutionRecords = filterNewExecutionRecords(
+      executionRecords,
+      executions,
+    )
+
+    if (newExecutionRecords.length > 0) {
+      const nextExecutions = [
+        ...newExecutionRecords,
+        ...executions,
+      ].slice(0, EXECUTION_RECORD_LIMIT)
+
+      setExecutions(nextExecutions)
+      saveExecutions(nextExecutions)
+    }
+
+    const duplicateCount = executionRecords.length - newExecutionRecords.length
+    const unavailableCount = history.length - readySnapshotCount
+    const details = [
+      `저장 기록 ${history.length}개 중 ${readySnapshotCount}개 확인`,
+      `체결 목록 ${newExecutionRecords.length}건 추가`,
+    ]
+
+    if (duplicateCount > 0) {
+      details.push(`이미 반영된 체결 ${duplicateCount}건 제외`)
+    }
+
+    if (noExecutionSnapshotCount > 0) {
+      details.push(`체결된 주문이 없는 기록 ${noExecutionSnapshotCount}개`)
+    }
+
+    if (unavailableCount > 0) {
+      details.push(`다음 거래일 데이터가 부족한 기록 ${unavailableCount}개`)
+    }
+
+    setPriceMessage(
+      newExecutionRecords.length > 0
+        ? `저장된 주문 기록 기준 체결 목록 ${newExecutionRecords.length}건을 추가했습니다.`
+        : '저장된 주문 기록에서 새로 추가할 체결 기록이 없습니다.',
+    )
+    setNoticeModal({
+      details,
+      message:
+        '저장된 주문 기록 전체에서 다음 거래일 가격으로 체결된 주문만 체결 목록에 반영했습니다. 계산기 입력 상태는 변경하지 않았습니다.',
+      title:
+        newExecutionRecords.length > 0
+          ? '전체 체결 추정이 반영되었습니다'
+          : '추가할 체결 기록이 없습니다',
     })
   }
 
@@ -975,6 +1045,14 @@ function App() {
             <span className="panel-stat">
               최근 {history.length}개 · {currentHistoryPage} / {historyPageCount}
             </span>
+            <button
+              type="button"
+              className="secondary-action compact"
+              disabled={history.length === 0}
+              onClick={handleApplyAllHistoryExecutions}
+            >
+              전체 체결 반영
+            </button>
             <button type="button" className="text-action" onClick={handleClearHistory}>
               비우기
             </button>
@@ -1048,12 +1126,12 @@ function ExecutionLedgerSection({
       </div>
 
       <div className="execution-summary-grid" aria-label="체결 요약">
-        <SummaryItem label="매수금액" value={formatCurrency(summary.buyAmount)} />
-        <SummaryItem label="매도금액" value={formatCurrency(summary.sellAmount)} />
-        <SummaryItem label="순수량" value={`${formatNumber(summary.netQuantity)}주`} />
-        <SummaryItem label="비용" value={formatCurrency(summary.feeAmount)} />
+        <SummaryItem label="매수 체결액" value={formatCurrency(summary.buyAmount)} />
+        <SummaryItem label="매도 체결액" value={formatCurrency(summary.sellAmount)} />
+        <SummaryItem label="수량 변화" value={formatShareChange(summary.netQuantity)} />
+        <SummaryItem label="거래비용" value={formatCurrency(summary.feeAmount)} />
         <SummaryItem
-          label="현금영향"
+          label="잔금 변화"
           value={formatSignedCurrency(summary.netCashFlow)}
         />
       </div>
@@ -1071,8 +1149,8 @@ function ExecutionLedgerSection({
                 <th scope="col">가격</th>
                 <th scope="col">수량</th>
                 <th scope="col">체결금액</th>
-                <th scope="col">비용</th>
-                <th scope="col">현금영향</th>
+                <th scope="col">거래비용</th>
+                <th scope="col">잔금 변화</th>
                 <th scope="col">메모</th>
                 <th scope="col">삭제</th>
               </tr>
@@ -2454,6 +2532,33 @@ function createExecutionRecordsFromPreview(
   })
 }
 
+function filterNewExecutionRecords(
+  records: ExecutionRecord[],
+  existingRecords: ExecutionRecord[],
+): ExecutionRecord[] {
+  const existingExecutionKeys = new Set(
+    existingRecords.flatMap((record) => {
+      const key = getExecutionSourceKey(record)
+
+      return key ? [key] : []
+    }),
+  )
+
+  return records.filter((record) => {
+    const key = getExecutionSourceKey(record)
+
+    return !key || !existingExecutionKeys.has(key)
+  })
+}
+
+function getExecutionSourceKey(record: ExecutionRecord): string | undefined {
+  if (!record.sourceSnapshotId || !record.sourceOrderId) {
+    return undefined
+  }
+
+  return `${record.sourceSnapshotId}:${record.sourceOrderId}`
+}
+
 function normalizeExecutionRecord(value: unknown): ExecutionRecord[] {
   if (!isRecord(value)) {
     return []
@@ -3027,6 +3132,18 @@ function formatSignedCurrency(value: number): string {
 
   const sign = value > 0 ? '+' : '-'
   return `${sign}${formatCurrency(Math.abs(value))}`
+}
+
+function formatShareChange(value: number): string {
+  if (value > 0) {
+    return `${formatNumber(value)}주 증가`
+  }
+
+  if (value < 0) {
+    return `${formatNumber(Math.abs(value))}주 감소`
+  }
+
+  return '변화 없음'
 }
 
 function formatNumber(value: number): string {
