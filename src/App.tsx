@@ -106,7 +106,7 @@ const STORAGE_INPUT_KEY = 'raor:v1:input'
 const STORAGE_SYMBOL_INPUTS_KEY = 'raor:v1:symbol-inputs'
 const STORAGE_HISTORY_KEY = 'raor:v1:order-snapshots'
 const PRICE_TABLE_PAGE_SIZE = 5
-const HISTORY_PAGE_SIZE = 7
+const HISTORY_PAGE_SIZE = 4
 
 const priceIntervalLabel: Record<PriceInterval, string> = {
   day: '일봉',
