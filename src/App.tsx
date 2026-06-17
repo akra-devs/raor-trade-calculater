@@ -114,6 +114,8 @@ interface ExecutionRecord {
   price: number
   quantity: number
   side: ExecutionSide
+  sourceOrderId?: string
+  sourceSnapshotId?: string
   symbol: StrategySymbol
 }
 
@@ -474,6 +476,37 @@ function App() {
       sortedCandles,
       preview.executionCandle,
     )
+    const executionRecords = createExecutionRecordsFromPreview(snapshot, preview)
+    const existingExecutionKeys = new Set(
+      executions
+        .filter((record) => record.sourceSnapshotId && record.sourceOrderId)
+        .map((record) => `${record.sourceSnapshotId}:${record.sourceOrderId}`),
+    )
+    const newExecutionRecords = executionRecords.filter(
+      (record) =>
+        !record.sourceSnapshotId ||
+        !record.sourceOrderId ||
+        !existingExecutionKeys.has(
+          `${record.sourceSnapshotId}:${record.sourceOrderId}`,
+        ),
+    )
+
+    if (newExecutionRecords.length > 0) {
+      const nextExecutions = [
+        ...newExecutionRecords,
+        ...executions,
+      ].slice(0, EXECUTION_RECORD_LIMIT)
+
+      setExecutions(nextExecutions)
+      saveExecutions(nextExecutions)
+    }
+
+    const executionRecordDetail =
+      newExecutionRecords.length > 0
+        ? `체결 목록 ${newExecutionRecords.length}건 추가`
+        : executionRecords.length > 0
+          ? '체결 목록은 이미 추가되어 중복 등록하지 않음'
+          : '체결된 주문 없음'
 
     setForm(nextInput)
     setSelectedDate(preview.executionCandle.date)
@@ -491,9 +524,10 @@ function App() {
         `T ${formatNumber(preview.calculation.previousTurn)} → ${formatNumber(preview.calculation.nextTurn)}`,
         `보유 ${formatNumber(preview.calculation.previousShares)}주 → ${formatNumber(preview.calculation.nextShares)}주`,
         `잔금 ${formatCurrency(preview.calculation.nextCashBalance)} · 평단 ${formatCurrency(preview.calculation.nextAveragePrice)}`,
+        executionRecordDetail,
       ],
       message:
-        '다음 거래일 가격으로 주문 체결을 추정해 계산기 입력 상태에 반영했습니다. 실제 체결과 다르면 입력값을 직접 조정하세요.',
+        '다음 거래일 가격으로 주문 체결을 추정해 계산기 입력 상태와 체결 목록에 반영했습니다. 실제 체결과 다르면 입력값이나 체결 기록을 직접 조정하세요.',
       title: '체결 추정이 반영되었습니다',
     })
   }
@@ -2564,6 +2598,62 @@ function createExecutionRecord(form: ExecutionFormState): ExecutionRecord | unde
   }
 }
 
+function createExecutionRecordsFromPreview(
+  snapshot: OrderSnapshot,
+  preview: NextTurnPreview,
+): ExecutionRecord[] {
+  if (!preview.calculation || !preview.executionCandle) {
+    return []
+  }
+
+  const executedTags = new Set(preview.calculation.executedOrderTags)
+  const executionCandle = preview.executionCandle
+  const createdAt = new Date().toISOString()
+
+  return snapshot.result.orders.flatMap((order) => {
+    if (!executedTags.has(order.tag)) {
+      return []
+    }
+
+    const executionPrice =
+      order.type === 'LIMIT' && typeof order.price === 'number'
+        ? order.price
+        : executionCandle.close
+
+    if (executionPrice <= 0 || order.quantity <= 0) {
+      return []
+    }
+
+    const price = roundMoney(executionPrice)
+    const quantity = roundQuantity(order.quantity)
+    const amounts = calculateExecutionAmounts(
+      order.side,
+      price,
+      quantity,
+      TRADE_COST_RATE,
+    )
+
+    return [
+      {
+        id: createSnapshotId(),
+        createdAt,
+        date: executionCandle.date,
+        feeAmount: amounts.feeAmount,
+        feeRate: TRADE_COST_RATE,
+        grossAmount: amounts.grossAmount,
+        netCashFlow: amounts.netCashFlow,
+        note: `${order.label} · 저장 주문 기록 기반 체결 추정`,
+        price,
+        quantity,
+        side: order.side,
+        sourceOrderId: order.id,
+        sourceSnapshotId: snapshot.id,
+        symbol: snapshot.input.symbol,
+      },
+    ]
+  })
+}
+
 function normalizeExecutionRecord(value: unknown): ExecutionRecord[] {
   if (!isRecord(value)) {
     return []
@@ -2600,6 +2690,14 @@ function normalizeExecutionRecord(value: unknown): ExecutionRecord[] {
       price: roundMoney(price),
       quantity: roundQuantity(quantity),
       side,
+      sourceOrderId:
+        typeof value.sourceOrderId === 'string'
+          ? value.sourceOrderId
+          : undefined,
+      sourceSnapshotId:
+        typeof value.sourceSnapshotId === 'string'
+          ? value.sourceSnapshotId
+          : undefined,
       symbol,
     },
   ]
