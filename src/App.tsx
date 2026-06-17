@@ -118,6 +118,7 @@ interface ExecutionSummary {
   feeAmount: number
   netCashFlow: number
   netQuantity: number
+  positionQuantity: number
   sellAmount: number
   sellQuantity: number
 }
@@ -334,13 +335,15 @@ function App() {
 
         if (
           key &&
-          typeof record.averagePriceAfter === 'number' &&
-          record.averagePriceAfter > 0 &&
           typeof record.sharesAfter === 'number' &&
-          record.sharesAfter > 0
+          record.sharesAfter >= 0
         ) {
           metadataByKey.set(key, {
-            averagePriceAfter: record.averagePriceAfter,
+            averagePriceAfter:
+              typeof record.averagePriceAfter === 'number' &&
+              record.averagePriceAfter > 0
+                ? record.averagePriceAfter
+                : undefined,
             sharesAfter: record.sharesAfter,
           })
         }
@@ -1235,7 +1238,7 @@ function ExecutionLedgerSection({
       <div className="execution-summary-grid" aria-label="체결 요약">
         <SummaryItem label="매수 체결액" value={formatCurrency(summary.buyAmount)} />
         <SummaryItem label="매도 체결액" value={formatCurrency(summary.sellAmount)} />
-        <SummaryItem label="수량" value={formatSignedShares(summary.netQuantity)} />
+        <SummaryItem label="수량" value={formatShares(summary.positionQuantity)} />
         <SummaryItem label="추정 평단가" value={formatOptionalCurrency(summary.averagePrice)} />
         <SummaryItem label="거래비용" value={formatCurrency(summary.feeAmount)} />
         <SummaryItem
@@ -2726,7 +2729,7 @@ function normalizeExecutionRecord(value: unknown): ExecutionRecord[] {
       quantity: roundQuantity(quantity),
       side,
       sharesAfter:
-        typeof sharesAfter === 'number' && sharesAfter > 0
+        typeof sharesAfter === 'number' && sharesAfter >= 0
           ? roundQuantity(sharesAfter)
           : undefined,
       sourceOrderId:
@@ -2769,6 +2772,7 @@ function calculateExecutionSummary(records: ExecutionRecord[]): ExecutionSummary
     feeAmount: 0,
     netCashFlow: 0,
     netQuantity: 0,
+    positionQuantity: 0,
     sellAmount: 0,
     sellQuantity: 0,
   }
@@ -2801,13 +2805,22 @@ function calculateExecutionSummary(records: ExecutionRecord[]): ExecutionSummary
 
   const latestPositionRecord = records.find(
     (record) =>
-      typeof record.averagePriceAfter === 'number' &&
-      record.averagePriceAfter > 0 &&
       typeof record.sharesAfter === 'number' &&
-      record.sharesAfter > 0,
+      record.sharesAfter >= 0,
   )
 
-  if (latestPositionRecord?.averagePriceAfter) {
+  if (latestPositionRecord) {
+    summary.positionQuantity = roundQuantity(latestPositionRecord.sharesAfter ?? 0)
+  } else {
+    summary.positionQuantity = roundQuantity(positionQuantity)
+  }
+
+  if (
+    latestPositionRecord &&
+    summary.positionQuantity > 0 &&
+    typeof latestPositionRecord.averagePriceAfter === 'number' &&
+    latestPositionRecord.averagePriceAfter > 0
+  ) {
     summary.averagePrice = roundMoney(latestPositionRecord.averagePriceAfter)
   } else if (positionQuantity > 0 && costBasis > 0) {
     summary.averagePrice = roundMoney(costBasis / positionQuantity)
@@ -3292,13 +3305,8 @@ function formatSignedCurrency(value: number): string {
   return `${sign}${formatCurrency(Math.abs(value))}`
 }
 
-function formatSignedShares(value: number): string {
-  if (value === 0) {
-    return '0주'
-  }
-
-  const sign = value > 0 ? '+' : '-'
-  return `${sign}${formatNumber(Math.abs(value))}주`
+function formatShares(value: number): string {
+  return `${formatNumber(Math.max(0, value))}주`
 }
 
 function formatNumber(value: number): string {
