@@ -498,8 +498,8 @@ export function CandlestickChart({
             <em>
               {typeof hoverTooltip.change === 'number' &&
               typeof hoverTooltip.changePercent === 'number'
-                ? `전봉대비 ${formatSignedCurrency(hoverTooltip.change)} (${formatSignedPercent(hoverTooltip.changePercent)})`
-                : '전봉대비 -'}
+                ? `${formatSignedCurrency(hoverTooltip.change)} (${formatSignedPercent(hoverTooltip.changePercent)})`
+                : '-'}
             </em>
           </div>
         ) : null}
