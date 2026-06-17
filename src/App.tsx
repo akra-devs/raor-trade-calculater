@@ -106,6 +106,7 @@ const STORAGE_INPUT_KEY = 'raor:v1:input'
 const STORAGE_SYMBOL_INPUTS_KEY = 'raor:v1:symbol-inputs'
 const STORAGE_HISTORY_KEY = 'raor:v1:order-snapshots'
 const PRICE_TABLE_PAGE_SIZE = 5
+const HISTORY_PAGE_SIZE = 7
 
 const priceIntervalLabel: Record<PriceInterval, string> = {
   day: '일봉',
@@ -161,6 +162,7 @@ function App() {
   const [resultModal, setResultModal] = useState<ResultModalPayload | null>(null)
   const [noticeModal, setNoticeModal] = useState<NoticeModalPayload | null>(null)
   const [history, setHistory] = useState<OrderSnapshot[]>(() => loadHistory())
+  const [historyPage, setHistoryPage] = useState(1)
   const [dailyCandles, setDailyCandles] = useState<
     Record<StrategySymbol, DailyCandle[]>
   >(() => ({ TQQQ: [], SOXL: [] }))
@@ -218,6 +220,13 @@ function App() {
   const derivedCashBalance = useMemo(
     () => calculateCashBalanceFromBudget(form.initialBudget, form.totalBuyAmount),
     [form.initialBudget, form.totalBuyAmount],
+  )
+  const historyPageCount = Math.max(1, Math.ceil(history.length / HISTORY_PAGE_SIZE))
+  const currentHistoryPage = Math.min(historyPage, historyPageCount)
+  const historyPageStart = (currentHistoryPage - 1) * HISTORY_PAGE_SIZE
+  const historyPageRows = history.slice(
+    historyPageStart,
+    historyPageStart + HISTORY_PAGE_SIZE,
   )
 
   const loadYfinanceJson = useCallback(async (symbol: StrategySymbol) => {
@@ -344,6 +353,7 @@ function App() {
       title: '생성 주문',
     })
     setHistory(nextHistory)
+    setHistoryPage(1)
     persistFormState(form)
     saveHistory(nextHistory)
   }
@@ -441,6 +451,7 @@ function App() {
 
   function handleClearHistory() {
     setHistory([])
+    setHistoryPage(1)
     saveHistory([])
   }
 
@@ -448,6 +459,12 @@ function App() {
     const nextHistory = history.filter((snapshot) => snapshot.id !== snapshotId)
 
     setHistory(nextHistory)
+    setHistoryPage((currentPage) =>
+      Math.min(
+        currentPage,
+        Math.max(1, Math.ceil(nextHistory.length / HISTORY_PAGE_SIZE)),
+      ),
+    )
     saveHistory(nextHistory)
   }
 
@@ -878,7 +895,9 @@ function App() {
         <div className="panel-heading">
           <h2 id="history-title">저장된 주문 기록</h2>
           <div className="history-actions">
-            <span className="panel-stat">최근 {history.length}개</span>
+            <span className="panel-stat">
+              최근 {history.length}개 · {currentHistoryPage} / {historyPageCount}
+            </span>
             <button type="button" className="text-action" onClick={handleClearHistory}>
               비우기
             </button>
@@ -888,22 +907,77 @@ function App() {
         {history.length === 0 ? (
           <div className="empty-state">저장된 기록 없음</div>
         ) : (
-          <div className="history-list">
-            {history.map((snapshot) => (
-              <HistoryItem
-                key={snapshot.id}
-                candles={dailyCandles[snapshot.input.symbol] ?? []}
-                onApplyNextTurn={handleApplyNextTurn}
-                onDelete={handleDeleteHistoryItem}
-                onRestore={handleRestore}
-                onShowOrders={handleShowHistoryOrders}
-                snapshot={snapshot}
-              />
-            ))}
-          </div>
+          <>
+            <HistoryPagination
+              currentPage={currentHistoryPage}
+              pageCount={historyPageCount}
+              pageEnd={Math.min(historyPageStart + HISTORY_PAGE_SIZE, history.length)}
+              pageStart={historyPageStart + 1}
+              totalCount={history.length}
+              onPageChange={setHistoryPage}
+            />
+            <div className="history-list">
+              {historyPageRows.map((snapshot) => (
+                <HistoryItem
+                  key={snapshot.id}
+                  candles={dailyCandles[snapshot.input.symbol] ?? []}
+                  onApplyNextTurn={handleApplyNextTurn}
+                  onDelete={handleDeleteHistoryItem}
+                  onRestore={handleRestore}
+                  onShowOrders={handleShowHistoryOrders}
+                  snapshot={snapshot}
+                />
+              ))}
+            </div>
+          </>
         )}
       </section>
     </main>
+  )
+}
+
+function HistoryPagination({
+  currentPage,
+  onPageChange,
+  pageCount,
+  pageEnd,
+  pageStart,
+  totalCount,
+}: {
+  currentPage: number
+  onPageChange: (page: number) => void
+  pageCount: number
+  pageEnd: number
+  pageStart: number
+  totalCount: number
+}) {
+  return (
+    <div className="history-pagination" aria-label="저장된 주문 기록 페이지">
+      <span>
+        {pageStart}-{pageEnd} / {totalCount}
+      </span>
+      <div className="pagination-controls">
+        <button
+          type="button"
+          className="text-action"
+          disabled={currentPage <= 1}
+          onClick={() => onPageChange(Math.max(1, currentPage - 1))}
+        >
+          이전
+        </button>
+        <span>
+          {currentPage} / {pageCount}
+        </span>
+        <button
+          type="button"
+          className="text-action"
+          disabled={currentPage >= pageCount}
+          onClick={() => onPageChange(Math.min(pageCount, currentPage + 1))}
+        >
+          다음
+        </button>
+      </div>
+    </div>
   )
 }
 

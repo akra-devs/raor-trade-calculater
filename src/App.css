@@ -1180,6 +1180,20 @@ button:focus-visible {
   gap: 10px;
 }
 
+.history-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.history-pagination > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 850;
+}
+
 .history-item {
   display: grid;
   grid-template-columns: minmax(170px, 0.72fr) minmax(210px, 0.82fr) minmax(220px, 0.9fr) minmax(320px, 1.18fr) auto;
@@ -1535,6 +1549,11 @@ button:focus-visible {
   }
 
   .price-list-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .history-pagination {
     align-items: flex-start;
     flex-direction: column;
   }
