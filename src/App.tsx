@@ -32,6 +32,7 @@ import {
 
 type AverageInputMode = 'costBasis' | 'averagePrice'
 type CashInputMode = 'cashBalance' | 'budgetSpent'
+type ExecutionSide = 'buy' | 'sell'
 
 interface FormState {
   symbol: StrategySymbol
@@ -91,6 +92,41 @@ interface NoticeModalPayload {
   title: string
 }
 
+interface ExecutionFormState {
+  date: string
+  feeRate: string
+  note: string
+  price: string
+  quantity: string
+  side: ExecutionSide
+  symbol: StrategySymbol
+}
+
+interface ExecutionRecord {
+  id: string
+  createdAt: string
+  date: string
+  feeAmount: number
+  feeRate: number
+  grossAmount: number
+  netCashFlow: number
+  note?: string
+  price: number
+  quantity: number
+  side: ExecutionSide
+  symbol: StrategySymbol
+}
+
+interface ExecutionSummary {
+  buyAmount: number
+  buyQuantity: number
+  feeAmount: number
+  netCashFlow: number
+  netQuantity: number
+  sellAmount: number
+  sellQuantity: number
+}
+
 interface NumberFieldProps {
   id: string
   label: string
@@ -105,8 +141,11 @@ interface NumberFieldProps {
 const STORAGE_INPUT_KEY = 'raor:v1:input'
 const STORAGE_SYMBOL_INPUTS_KEY = 'raor:v1:symbol-inputs'
 const STORAGE_HISTORY_KEY = 'raor:v1:order-snapshots'
+const STORAGE_EXECUTIONS_KEY = 'raor:v1:executions'
 const PRICE_TABLE_PAGE_SIZE = 5
 const HISTORY_PAGE_SIZE = 4
+const EXECUTION_RECORD_LIMIT = 500
+const DEFAULT_EXECUTION_FEE_PERCENT = TRADE_COST_RATE * 100
 
 const priceIntervalLabel: Record<PriceInterval, string> = {
   day: '일봉',
@@ -144,6 +183,18 @@ function createDefaultFormForSymbol(symbol: StrategySymbol): FormState {
   }
 }
 
+function createDefaultExecutionForm(symbol: StrategySymbol): ExecutionFormState {
+  return {
+    date: createTodayInputDate(),
+    feeRate: stringifyRoundedInput(DEFAULT_EXECUTION_FEE_PERCENT),
+    note: '',
+    price: '',
+    quantity: '',
+    side: 'buy',
+    symbol,
+  }
+}
+
 const currencyFormatter = new Intl.NumberFormat('en-US', {
   style: 'currency',
   currency: 'USD',
@@ -163,6 +214,12 @@ function App() {
   const [noticeModal, setNoticeModal] = useState<NoticeModalPayload | null>(null)
   const [history, setHistory] = useState<OrderSnapshot[]>(() => loadHistory())
   const [historyPage, setHistoryPage] = useState(1)
+  const [executionForm, setExecutionForm] = useState<ExecutionFormState>(() =>
+    createDefaultExecutionForm(form.symbol),
+  )
+  const [executions, setExecutions] = useState<ExecutionRecord[]>(() =>
+    loadExecutions(),
+  )
   const [dailyCandles, setDailyCandles] = useState<
     Record<StrategySymbol, DailyCandle[]>
   >(() => ({ TQQQ: [], SOXL: [] }))
@@ -280,6 +337,16 @@ function App() {
     value: FormState[Key],
   ) {
     setForm((current) => ({
+      ...current,
+      [key]: value,
+    }))
+  }
+
+  function updateExecutionField<Key extends keyof ExecutionFormState>(
+    key: Key,
+    value: ExecutionFormState[Key],
+  ) {
+    setExecutionForm((current) => ({
       ...current,
       [key]: value,
     }))
@@ -466,6 +533,41 @@ function App() {
       ),
     )
     saveHistory(nextHistory)
+  }
+
+  function handleAddExecution() {
+    const record = createExecutionRecord(executionForm)
+
+    if (!record) {
+      setNoticeModal({
+        message: '체결일자, 가격, 수량을 확인하세요. 가격과 수량은 0보다 커야 합니다.',
+        title: '체결 기록을 추가하지 못했습니다',
+      })
+      return
+    }
+
+    const nextExecutions = [record, ...executions].slice(0, EXECUTION_RECORD_LIMIT)
+
+    setExecutions(nextExecutions)
+    saveExecutions(nextExecutions)
+    setExecutionForm((current) => ({
+      ...current,
+      note: '',
+      price: '',
+      quantity: '',
+    }))
+  }
+
+  function handleDeleteExecution(recordId: string) {
+    const nextExecutions = executions.filter((record) => record.id !== recordId)
+
+    setExecutions(nextExecutions)
+    saveExecutions(nextExecutions)
+  }
+
+  function handleClearExecutions() {
+    setExecutions([])
+    saveExecutions([])
   }
 
   function handleSelectDate(date: string) {
@@ -932,7 +1034,276 @@ function App() {
           </>
         )}
       </section>
+
+      <ExecutionLedgerSection
+        form={executionForm}
+        records={executions}
+        onClear={handleClearExecutions}
+        onDelete={handleDeleteExecution}
+        onSubmit={handleAddExecution}
+        onUpdate={updateExecutionField}
+      />
     </main>
+  )
+}
+
+function ExecutionLedgerSection({
+  form,
+  onClear,
+  onDelete,
+  onSubmit,
+  onUpdate,
+  records,
+}: {
+  form: ExecutionFormState
+  onClear: () => void
+  onDelete: (recordId: string) => void
+  onSubmit: () => void
+  onUpdate: <Key extends keyof ExecutionFormState>(
+    key: Key,
+    value: ExecutionFormState[Key],
+  ) => void
+  records: ExecutionRecord[]
+}) {
+  const summary = useMemo(() => calculateExecutionSummary(records), [records])
+
+  return (
+    <section className="panel execution-panel" aria-labelledby="execution-title">
+      <div className="panel-heading">
+        <h2 id="execution-title">체결 목록</h2>
+        <div className="history-actions">
+          <span className="panel-stat">최근 {records.length}건</span>
+          <button
+            type="button"
+            className="text-action"
+            disabled={records.length === 0}
+            onClick={onClear}
+          >
+            비우기
+          </button>
+        </div>
+      </div>
+
+      <form
+        className="execution-form"
+        onSubmit={(event) => {
+          event.preventDefault()
+          onSubmit()
+        }}
+      >
+        <label className="field" htmlFor="execution-date">
+          <span>체결일자</span>
+          <input
+            id="execution-date"
+            type="date"
+            value={form.date}
+            onChange={(event) => onUpdate('date', event.target.value)}
+          />
+        </label>
+
+        <label className="field" htmlFor="execution-symbol">
+          <span>종목</span>
+          <select
+            id="execution-symbol"
+            value={form.symbol}
+            onChange={(event) =>
+              onUpdate('symbol', event.target.value as StrategySymbol)
+            }
+          >
+            {symbolOptions.map((symbol) => (
+              <option key={symbol} value={symbol}>
+                {symbol}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <div className="field execution-side-field">
+          <span>구분</span>
+          <div className="segmented" role="group" aria-label="체결 구분">
+            <button
+              type="button"
+              className={form.side === 'buy' ? 'active' : ''}
+              onClick={() => onUpdate('side', 'buy')}
+            >
+              매수
+            </button>
+            <button
+              type="button"
+              className={form.side === 'sell' ? 'active' : ''}
+              onClick={() => onUpdate('side', 'sell')}
+            >
+              매도
+            </button>
+          </div>
+        </div>
+
+        <NumberField
+          id="execution-price"
+          label="가격"
+          min="0"
+          step="0.01"
+          suffix="$"
+          value={form.price}
+          onChange={(value) => onUpdate('price', value)}
+        />
+
+        <NumberField
+          id="execution-quantity"
+          label="수량"
+          min="0"
+          step="1"
+          suffix="주"
+          value={form.quantity}
+          onChange={(value) => onUpdate('quantity', value)}
+        />
+
+        <NumberField
+          id="execution-fee-rate"
+          label="비용률"
+          min="0"
+          step="0.01"
+          suffix="%"
+          value={form.feeRate}
+          onChange={(value) => onUpdate('feeRate', value)}
+        />
+
+        <label className="field execution-note-field" htmlFor="execution-note">
+          <span>메모</span>
+          <input
+            id="execution-note"
+            type="text"
+            placeholder="예: 장마감 LOC 체결"
+            value={form.note}
+            onChange={(event) => onUpdate('note', event.target.value)}
+          />
+        </label>
+
+        <button type="submit" className="primary-action execution-submit">
+          추가
+        </button>
+      </form>
+
+      <div className="execution-summary-grid" aria-label="체결 요약">
+        <SummaryItem label="매수금액" value={formatCurrency(summary.buyAmount)} />
+        <SummaryItem label="매도금액" value={formatCurrency(summary.sellAmount)} />
+        <SummaryItem label="순수량" value={`${formatNumber(summary.netQuantity)}주`} />
+        <SummaryItem label="비용" value={formatCurrency(summary.feeAmount)} />
+        <SummaryItem
+          label="현금영향"
+          value={formatSignedCurrency(summary.netCashFlow)}
+        />
+      </div>
+
+      {records.length === 0 ? (
+        <div className="empty-state">체결 기록 없음</div>
+      ) : (
+        <div className="table-wrap execution-table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">체결일자</th>
+                <th scope="col">종목</th>
+                <th scope="col">구분</th>
+                <th scope="col">가격</th>
+                <th scope="col">수량</th>
+                <th scope="col">체결금액</th>
+                <th scope="col">비용</th>
+                <th scope="col">현금영향</th>
+                <th scope="col">메모</th>
+                <th scope="col">삭제</th>
+              </tr>
+            </thead>
+            <tbody>
+              {records.map((record) => (
+                <tr key={record.id}>
+                  <td>
+                    <strong>{record.date}</strong>
+                    <small>{formatDateTime(record.createdAt)}</small>
+                  </td>
+                  <td>{record.symbol}</td>
+                  <td>
+                    <span className={`side-badge ${record.side}`}>
+                      {record.side === 'buy' ? '매수' : '매도'}
+                    </span>
+                  </td>
+                  <td>{formatCurrency(record.price)}</td>
+                  <td>{formatNumber(record.quantity)}주</td>
+                  <td>{formatCurrency(record.grossAmount)}</td>
+                  <td>
+                    {formatCurrency(record.feeAmount)}
+                    <small>{formatNumber(record.feeRate * 100)}%</small>
+                  </td>
+                  <td>
+                    <strong
+                      className={
+                        record.netCashFlow >= 0 ? 'amount-positive' : 'amount-negative'
+                      }
+                    >
+                      {formatSignedCurrency(record.netCashFlow)}
+                    </strong>
+                  </td>
+                  <td>{record.note || '-'}</td>
+                  <td>
+                    <button
+                      type="button"
+                      className="icon-action danger-action"
+                      aria-label={`${record.symbol} ${record.date} 체결 기록 삭제`}
+                      title="삭제"
+                      onClick={() => onDelete(record.id)}
+                    >
+                      <TrashIcon />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  )
+}
+
+function TrashIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="trash-icon"
+      fill="none"
+      height="18"
+      viewBox="0 0 24 24"
+      width="18"
+    >
+      <path
+        d="M3 6h18"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="2"
+      />
+      <path
+        d="M8 6V4h8v2"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="2"
+      />
+      <path
+        d="M19 6l-1 14H6L5 6"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="2"
+      />
+      <path
+        d="M10 11v5M14 11v5"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="2"
+      />
+    </svg>
   )
 }
 
@@ -1041,43 +1412,7 @@ function HistoryItem({
           title="삭제"
           onClick={() => onDelete(snapshot.id)}
         >
-          <svg
-            aria-hidden="true"
-            className="trash-icon"
-            fill="none"
-            height="18"
-            viewBox="0 0 24 24"
-            width="18"
-          >
-            <path
-              d="M3 6h18"
-              stroke="currentColor"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth="2"
-            />
-            <path
-              d="M8 6V4h8v2"
-              stroke="currentColor"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth="2"
-            />
-            <path
-              d="M19 6l-1 14H6L5 6"
-              stroke="currentColor"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth="2"
-            />
-            <path
-              d="M10 11v5M14 11v5"
-              stroke="currentColor"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth="2"
-            />
-          </svg>
+          <TrashIcon />
         </button>
       </div>
     </article>
@@ -2186,6 +2521,140 @@ function saveHistory(history: OrderSnapshot[]) {
   writeStorage(STORAGE_HISTORY_KEY, history)
 }
 
+function loadExecutions(): ExecutionRecord[] {
+  const saved = readStorage(STORAGE_EXECUTIONS_KEY)
+
+  if (!Array.isArray(saved)) {
+    return []
+  }
+
+  return saved.flatMap(normalizeExecutionRecord).slice(0, EXECUTION_RECORD_LIMIT)
+}
+
+function saveExecutions(records: ExecutionRecord[]) {
+  writeStorage(STORAGE_EXECUTIONS_KEY, records)
+}
+
+function createExecutionRecord(form: ExecutionFormState): ExecutionRecord | undefined {
+  const date = normalizeDateInput(form.date)
+  const price = parseNumber(form.price)
+  const quantity = parseNumber(form.quantity)
+
+  if (!date || price <= 0 || quantity <= 0) {
+    return undefined
+  }
+
+  const side = normalizeExecutionSide(form.side) ?? 'buy'
+  const feeRate = Math.max(0, parseNumber(form.feeRate) / 100)
+  const amounts = calculateExecutionAmounts(side, price, quantity, feeRate)
+
+  return {
+    id: createSnapshotId(),
+    createdAt: new Date().toISOString(),
+    date,
+    feeAmount: amounts.feeAmount,
+    feeRate,
+    grossAmount: amounts.grossAmount,
+    netCashFlow: amounts.netCashFlow,
+    note: form.note.trim() || undefined,
+    price: roundMoney(price),
+    quantity: roundQuantity(quantity),
+    side,
+    symbol: form.symbol,
+  }
+}
+
+function normalizeExecutionRecord(value: unknown): ExecutionRecord[] {
+  if (!isRecord(value)) {
+    return []
+  }
+
+  const date = normalizeDateInput(stringifyInput(value.date, ''))
+  const symbol = isStrategySymbol(value.symbol) ? value.symbol : undefined
+  const side = normalizeExecutionSide(value.side)
+  const price = parseUnknownNumber(value.price)
+  const quantity = parseUnknownNumber(value.quantity)
+
+  if (!date || !symbol || !side || price <= 0 || quantity <= 0) {
+    return []
+  }
+
+  const feeRate = Math.max(0, parseUnknownNumber(value.feeRate))
+  const amounts = calculateExecutionAmounts(side, price, quantity, feeRate)
+
+  return [
+    {
+      id: typeof value.id === 'string' ? value.id : createSnapshotId(),
+      createdAt:
+        typeof value.createdAt === 'string'
+          ? value.createdAt
+          : new Date().toISOString(),
+      date,
+      feeAmount: amounts.feeAmount,
+      feeRate,
+      grossAmount: amounts.grossAmount,
+      netCashFlow: amounts.netCashFlow,
+      note: typeof value.note === 'string' && value.note.trim()
+        ? value.note.trim()
+        : undefined,
+      price: roundMoney(price),
+      quantity: roundQuantity(quantity),
+      side,
+      symbol,
+    },
+  ]
+}
+
+function calculateExecutionAmounts(
+  side: ExecutionSide,
+  price: number,
+  quantity: number,
+  feeRate: number,
+): Pick<ExecutionRecord, 'feeAmount' | 'grossAmount' | 'netCashFlow'> {
+  const grossAmount = roundMoney(price * quantity)
+  const feeAmount = roundMoney(grossAmount * feeRate)
+  const netCashFlow =
+    side === 'buy'
+      ? -roundMoney(grossAmount + feeAmount)
+      : roundMoney(grossAmount - feeAmount)
+
+  return {
+    feeAmount,
+    grossAmount,
+    netCashFlow,
+  }
+}
+
+function calculateExecutionSummary(records: ExecutionRecord[]): ExecutionSummary {
+  return records.reduce<ExecutionSummary>(
+    (summary, record) => {
+      if (record.side === 'buy') {
+        summary.buyAmount += record.grossAmount
+        summary.buyQuantity += record.quantity
+        summary.netQuantity += record.quantity
+      } else {
+        summary.sellAmount += record.grossAmount
+        summary.sellQuantity += record.quantity
+        summary.netQuantity -= record.quantity
+      }
+
+      summary.feeAmount += record.feeAmount
+      summary.netCashFlow += record.netCashFlow
+
+      return summary
+    },
+    {
+      buyAmount: 0,
+      buyQuantity: 0,
+      feeAmount: 0,
+      netCashFlow: 0,
+      netQuantity: 0,
+      sellAmount: 0,
+      sellQuantity: 0,
+    },
+  )
+}
+
 function normalizeFormState(value: unknown): FormState {
   const source = isRecord(value) ? value : {}
   const symbol = isStrategySymbol(source.symbol) ? source.symbol : DEFAULT_FORM.symbol
@@ -2450,6 +2919,22 @@ function stringifyRoundedInput(value: number): string {
   return String(Math.round((value + Number.EPSILON) * 100) / 100)
 }
 
+function roundMoney(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0
+  }
+
+  return Math.round((value + Number.EPSILON) * 100) / 100
+}
+
+function roundQuantity(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0
+  }
+
+  return Math.round((value + Number.EPSILON) * 10000) / 10000
+}
+
 function parseUnknownNumber(value: unknown): number {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return value
@@ -2568,6 +3053,40 @@ function isAverageInputMode(value: unknown): value is AverageInputMode {
 
 function isCashInputMode(value: unknown): value is CashInputMode {
   return value === 'cashBalance' || value === 'budgetSpent'
+}
+
+function normalizeExecutionSide(value: unknown): ExecutionSide | undefined {
+  return value === 'buy' || value === 'sell' ? value : undefined
+}
+
+function normalizeDateInput(value: string): string | undefined {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return undefined
+  }
+
+  const [year, month, day] = value.split('-').map(Number)
+  const parsed = new Date(Date.UTC(year, month - 1, day))
+
+  if (
+    Number.isNaN(parsed.getTime()) ||
+    parsed.getUTCFullYear() !== year ||
+    parsed.getUTCMonth() !== month - 1 ||
+    parsed.getUTCDate() !== day
+  ) {
+    return undefined
+  }
+
+  return value
+}
+
+function createTodayInputDate(): string {
+  const now = new Date()
+
+  return [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, '0'),
+    String(now.getDate()).padStart(2, '0'),
+  ].join('-')
 }
 
 function normalizeCashInputMode(source: Record<string, unknown>): CashInputMode {
