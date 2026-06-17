@@ -481,7 +481,7 @@ function App() {
         `${preview.executionCandle.date} 종가 ${formatCurrency(preview.executionCandle.close)} 기준`,
         `T ${formatNumber(preview.calculation.previousTurn)} → ${formatNumber(preview.calculation.nextTurn)}`,
         `보유 ${formatNumber(preview.calculation.previousShares)}주 → ${formatNumber(preview.calculation.nextShares)}주`,
-        `잔금 ${formatCurrency(preview.calculation.nextCashBalance)} · 평단 ${formatCurrency(preview.calculation.nextAveragePrice)}`,
+        `잔금 ${formatCurrency(preview.calculation.nextCashBalance)} · 추정 평단가 ${formatCurrency(preview.calculation.nextAveragePrice)}`,
         executionRecordDetail,
       ],
       message:
@@ -1157,7 +1157,7 @@ function ExecutionLedgerSection({
       <div className="execution-summary-grid" aria-label="체결 요약">
         <SummaryItem label="매수 체결액" value={formatCurrency(summary.buyAmount)} />
         <SummaryItem label="매도 체결액" value={formatCurrency(summary.sellAmount)} />
-        <SummaryItem label="수량 변화" value={formatShareChange(summary.netQuantity)} />
+        <SummaryItem label="수량" value={formatSignedShares(summary.netQuantity)} />
         <SummaryItem label="거래비용" value={formatCurrency(summary.feeAmount)} />
         <SummaryItem
           label="잔금 변화"
@@ -1487,7 +1487,7 @@ function HistoryNextTurnPreview({
           {preview.isReferenceDateInferred ? ' · 기준일 추정' : ''}
         </small>
         <small>
-          잔금 {formatCurrency(preview.calculation.nextCashBalance)} · 평단{' '}
+          잔금 {formatCurrency(preview.calculation.nextCashBalance)} · 추정 평단가{' '}
           {formatCurrency(preview.calculation.nextAveragePrice)}
         </small>
         <small>{executionSummary}</small>
@@ -3176,16 +3176,13 @@ function formatSignedCurrency(value: number): string {
   return `${sign}${formatCurrency(Math.abs(value))}`
 }
 
-function formatShareChange(value: number): string {
-  if (value > 0) {
-    return `${formatNumber(value)}주 증가`
+function formatSignedShares(value: number): string {
+  if (value === 0) {
+    return '0주'
   }
 
-  if (value < 0) {
-    return `${formatNumber(Math.abs(value))}주 감소`
-  }
-
-  return '변화 없음'
+  const sign = value > 0 ? '+' : '-'
+  return `${sign}${formatNumber(Math.abs(value))}주`
 }
 
 function formatNumber(value: number): string {
