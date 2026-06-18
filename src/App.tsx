@@ -2129,10 +2129,12 @@ function DailyPriceTable({
   const sortedCandles = sortDailyCandles(candles)
   const latestFirst = [...sortedCandles].reverse()
   const [page, setPage] = useState(1)
+  const [isExpanded, setIsExpanded] = useState(false)
   const pageCount = Math.max(1, Math.ceil(latestFirst.length / PRICE_TABLE_PAGE_SIZE))
   const currentPage = Math.min(page, pageCount)
   const pageStart = (currentPage - 1) * PRICE_TABLE_PAGE_SIZE
   const pageRows = latestFirst.slice(pageStart, pageStart + PRICE_TABLE_PAGE_SIZE)
+  const tablePanelId = `${intervalLabel}-price-list-panel`
 
   if (latestFirst.length === 0) {
     return <div className="empty-state">yfinance {intervalLabel} 데이터 없음</div>
@@ -2144,75 +2146,91 @@ function DailyPriceTable({
         <div>
           <strong>{intervalLabel} 가격 리스트</strong>
           <span>
-            {pageStart + 1}-{Math.min(pageStart + PRICE_TABLE_PAGE_SIZE, latestFirst.length)} /{' '}
-            {latestFirst.length}
+            {isExpanded
+              ? `${pageStart + 1}-${Math.min(pageStart + PRICE_TABLE_PAGE_SIZE, latestFirst.length)} / ${latestFirst.length}`
+              : `${latestFirst.length}개`}
           </span>
         </div>
-        <div className="pagination-controls" aria-label="가격 리스트 페이지">
+        <div className="price-list-actions">
           <button
             type="button"
-            className="text-action"
-            disabled={currentPage <= 1}
-            onClick={() => setPage(Math.max(1, currentPage - 1))}
+            aria-controls={tablePanelId}
+            aria-expanded={isExpanded}
+            className="secondary-action compact"
+            onClick={() => setIsExpanded((current) => !current)}
           >
-            이전
+            {isExpanded ? '접기' : '펼치기'}
           </button>
-          <span>
-            {currentPage} / {pageCount}
-          </span>
-          <button
-            type="button"
-            className="text-action"
-            disabled={currentPage >= pageCount}
-            onClick={() => setPage(Math.min(pageCount, currentPage + 1))}
-          >
-            다음
-          </button>
+          {isExpanded ? (
+            <div className="pagination-controls" aria-label="가격 리스트 페이지">
+              <button
+                type="button"
+                className="text-action"
+                disabled={currentPage <= 1}
+                onClick={() => setPage(Math.max(1, currentPage - 1))}
+              >
+                이전
+              </button>
+              <span>
+                {currentPage} / {pageCount}
+              </span>
+              <button
+                type="button"
+                className="text-action"
+                disabled={currentPage >= pageCount}
+                onClick={() => setPage(Math.min(pageCount, currentPage + 1))}
+              >
+                다음
+              </button>
+            </div>
+          ) : null}
         </div>
       </div>
 
-      <div className="table-wrap price-table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th scope="col">일자</th>
-              <th scope="col">시가</th>
-              <th scope="col">고가</th>
-              <th scope="col">저가</th>
-              <th scope="col">종가</th>
-              <th scope="col">등락</th>
-            </tr>
-          </thead>
-          <tbody>
-            {pageRows.map((candle) => {
-              const previousClose = getPreviousClose(sortedCandles, candle.date)
-              const change = previousClose
-                ? ((candle.close - previousClose) / previousClose) * 100
-                : undefined
+      {isExpanded ? (
+        <div id={tablePanelId} className="table-wrap price-table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">일자</th>
+                <th scope="col">시가</th>
+                <th scope="col">고가</th>
+                <th scope="col">저가</th>
+                <th scope="col">종가</th>
+                <th scope="col">등락</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pageRows.map((candle) => {
+                const previousClose = getPreviousClose(sortedCandles, candle.date)
+                const change = previousClose
+                  ? ((candle.close - previousClose) / previousClose) * 100
+                  : undefined
 
-              return (
-                <tr
-                  key={candle.date}
-                  className={selectedDate === candle.date ? 'selected-row' : ''}
-                  onClick={() => onSelectDate(candle.date)}
-                >
-                  <td>
-                    <strong>{candle.date}</strong>
-                    {selectedDate === candle.date ? <small>선택됨</small> : null}
-                  </td>
-                  <td>{formatCurrency(candle.open)}</td>
-                  <td>{formatCurrency(candle.high)}</td>
-                  <td>{formatCurrency(candle.low)}</td>
-                  <td>
-                    <strong>{formatCurrency(candle.close)}</strong>
-                  </td>
-                  <td>{formatChange(change)}</td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
+                return (
+                  <tr
+                    key={candle.date}
+                    className={selectedDate === candle.date ? 'selected-row' : ''}
+                    onClick={() => onSelectDate(candle.date)}
+                  >
+                    <td>
+                      <strong>{candle.date}</strong>
+                      {selectedDate === candle.date ? <small>선택됨</small> : null}
+                    </td>
+                    <td>{formatCurrency(candle.open)}</td>
+                    <td>{formatCurrency(candle.high)}</td>
+                    <td>{formatCurrency(candle.low)}</td>
+                    <td>
+                      <strong>{formatCurrency(candle.close)}</strong>
+                    </td>
+                    <td>{formatChange(change)}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
     </section>
   )
 }

@@ -1154,6 +1154,14 @@ button:focus-visible {
   font-weight: 800;
 }
 
+.price-list-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .pagination-controls {
   display: flex;
   align-items: center;
@@ -1581,6 +1589,11 @@ button:focus-visible {
   .price-list-heading {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .price-list-actions {
+    justify-content: flex-start;
+    width: 100%;
   }
 
   .history-pagination {
