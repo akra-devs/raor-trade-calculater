@@ -75,9 +75,22 @@ interface MarketDataFile {
   provider?: string
   symbol?: string
   fetchedAt?: string
+  marketStatus?: unknown
   missingTradingDays?: string[]
   skippedClosedDays?: string[]
   candles?: unknown
+}
+
+interface MarketStatus {
+  calendar?: string
+  date: string
+  isTradingDay: boolean
+  marketClose?: string
+  marketOpen?: string
+  nextTradingDay?: string
+  previousTradingDay?: string
+  status?: string
+  timezone?: string
 }
 
 interface ResultModalPayload {
@@ -205,6 +218,9 @@ function App() {
   const [dailyCandles, setDailyCandles] = useState<
     Record<StrategySymbol, DailyCandle[]>
   >(() => ({ TQQQ: [], SOXL: [] }))
+  const [marketStatuses, setMarketStatuses] = useState<
+    Partial<Record<StrategySymbol, MarketStatus>>
+  >({})
   const [priceMessage, setPriceMessage] = useState('')
   const [marketDataLoading, setMarketDataLoading] = useState(false)
   const [priceInterval, setPriceInterval] = useState<PriceInterval>('day')
@@ -227,6 +243,7 @@ function App() {
     () => aggregateCandles(activeDailyCandles, priceInterval),
     [activeDailyCandles, priceInterval],
   )
+  const activeMarketStatus = marketStatuses[form.symbol]
   const effectiveSelectedDate = useMemo(() => {
     if (selectedDate && activeDailyCandles.some((candle) => candle.date === selectedDate)) {
       return selectedDate
@@ -294,11 +311,19 @@ function App() {
         ...current,
         [symbol]: candles,
       }))
+      setMarketStatuses((current) => ({
+        ...current,
+        [symbol]: normalizeMarketStatus(payload.marketStatus),
+      }))
       setPriceMessage(formatMarketDataLoadMessage(symbol, payload, candles.length))
     } catch (error) {
       setDailyCandles((current) => ({
         ...current,
         [symbol]: [],
+      }))
+      setMarketStatuses((current) => ({
+        ...current,
+        [symbol]: undefined,
       }))
       setPriceMessage(error instanceof Error ? error.message : 'yfinance 데이터를 불러오지 못했습니다.')
     } finally {
@@ -1069,6 +1094,7 @@ function App() {
             <span className="panel-stat">{form.symbol}</span>
             <span className="panel-stat">원천 {activeDailyCandles.length}일</span>
             <span className="panel-stat">{priceIntervalLabel[priceInterval]} {visibleCandles.length}개</span>
+            <MarketStatusBadge status={activeMarketStatus} />
           </div>
         </div>
 
@@ -2001,6 +2027,16 @@ function SummaryItem({ label, value }: { label: string; value: string }) {
       <span>{label}</span>
       <strong>{value}</strong>
     </div>
+  )
+}
+
+function MarketStatusBadge({ status }: { status?: MarketStatus }) {
+  const tone = !status ? 'unknown' : status.isTradingDay ? 'open' : 'closed'
+
+  return (
+    <span className={`panel-stat market-status-stat ${tone}`}>
+      {formatMarketStatusLabel(status)}
+    </span>
   )
 }
 
@@ -2997,6 +3033,36 @@ function normalizeMarketDataFileCandles(payload: MarketDataFile): DailyCandle[] 
   return normalizeMarketDataCandles(payload.candles)
 }
 
+function normalizeMarketStatus(value: unknown): MarketStatus | undefined {
+  if (!isRecord(value)) {
+    return undefined
+  }
+
+  const date = typeof value.date === 'string' ? value.date : ''
+
+  if (!normalizeDateInput(date)) {
+    return undefined
+  }
+
+  return {
+    calendar: typeof value.calendar === 'string' ? value.calendar : undefined,
+    date,
+    isTradingDay: value.isTradingDay === true,
+    marketClose:
+      typeof value.marketClose === 'string' ? value.marketClose : undefined,
+    marketOpen:
+      typeof value.marketOpen === 'string' ? value.marketOpen : undefined,
+    nextTradingDay:
+      typeof value.nextTradingDay === 'string' ? value.nextTradingDay : undefined,
+    previousTradingDay:
+      typeof value.previousTradingDay === 'string'
+        ? value.previousTradingDay
+        : undefined,
+    status: typeof value.status === 'string' ? value.status : undefined,
+    timezone: typeof value.timezone === 'string' ? value.timezone : undefined,
+  }
+}
+
 function normalizeMarketDataCandles(value: unknown): DailyCandle[] {
   if (!Array.isArray(value)) {
     return []
@@ -3037,6 +3103,24 @@ function formatMarketDataLoadMessage(
   }
 
   return `${symbol} ${candleCount}개 일봉을 불러왔습니다. 출처: ${sourceLabel}${calendarLabel}`
+}
+
+function formatMarketStatusLabel(status?: MarketStatus): string {
+  if (!status) {
+    return 'NYSE 상태 확인 전'
+  }
+
+  const calendar = status.calendar ?? 'NYSE'
+
+  if (status.isTradingDay) {
+    return `${calendar} ${status.date} 정상 거래일`
+  }
+
+  const nextTradingDay = status.nextTradingDay
+    ? ` · 다음 ${status.nextTradingDay}`
+    : ''
+
+  return `${calendar} ${status.date} 휴장${nextTradingDay}`
 }
 
 function readStorage(key: string): unknown {

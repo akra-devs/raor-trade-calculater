@@ -224,6 +224,7 @@ def fetch_symbol(
       "include" if include_current_day else "exclude-before-ny-16:15"
     ),
     "calendar": "NYSE",
+    "marketStatus": get_market_status(market_calendar),
     "fetchedAt": datetime.now(timezone.utc).isoformat(),
     "missingTradingDays": sorted(missing_trading_days),
     "skippedClosedDays": sorted(skipped_closed_days),
@@ -266,6 +267,34 @@ def list_market_trading_days(schedule: Any) -> list[str]:
 
 def is_market_trading_day(schedule: Any, date: str) -> bool:
   return date in set(list_market_trading_days(schedule))
+
+
+def get_market_status(market_calendar: Any) -> dict[str, Any]:
+  market_date = datetime.now(MARKET_TIMEZONE).date()
+  schedule = market_calendar.schedule(
+    start_date=(market_date - timedelta(days=14)).isoformat(),
+    end_date=(market_date + timedelta(days=14)).isoformat(),
+  )
+  trading_days = list_market_trading_days(schedule)
+  market_date_text = market_date.isoformat()
+  previous_trading_days = [date for date in trading_days if date < market_date_text]
+  next_trading_days = [date for date in trading_days if date > market_date_text]
+  status: dict[str, Any] = {
+    "calendar": "NYSE",
+    "date": market_date_text,
+    "timezone": str(MARKET_TIMEZONE),
+    "isTradingDay": market_date_text in set(trading_days),
+    "status": "trading_day" if market_date_text in set(trading_days) else "closed",
+    "previousTradingDay": previous_trading_days[-1] if previous_trading_days else None,
+    "nextTradingDay": next_trading_days[0] if next_trading_days else None,
+  }
+
+  if status["isTradingDay"]:
+    row = schedule.loc[market_date_text]
+    status["marketOpen"] = row["market_open"].isoformat()
+    status["marketClose"] = row["market_close"].isoformat()
+
+  return status
 
 
 def merge_recent_history_patch(

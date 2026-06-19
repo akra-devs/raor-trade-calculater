@@ -64,6 +64,24 @@ h2 {
   font-weight: 700;
 }
 
+.market-status-stat.open {
+  border-color: rgba(4, 120, 87, 0.2);
+  background: var(--buy-bg);
+  color: var(--buy);
+}
+
+.market-status-stat.closed {
+  border-color: rgba(180, 35, 24, 0.2);
+  background: var(--sell-bg);
+  color: var(--sell);
+}
+
+.market-status-stat.unknown {
+  border-color: var(--line);
+  background: var(--soft);
+  color: var(--muted);
+}
+
 .workspace {
   display: grid;
   grid-template-columns: 1fr;
