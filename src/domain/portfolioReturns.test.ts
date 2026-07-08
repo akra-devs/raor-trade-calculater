@@ -46,6 +46,7 @@ describe('portfolio return calculation', () => {
       returnPercent: -1.5152,
       shares: 5,
       totalAsset: 6500,
+      totalProfitLoss: -100,
     })
     expect(result.latestPoint).toMatchObject({
       cashBalance: 5600,
@@ -55,6 +56,7 @@ describe('portfolio return calculation', () => {
       shares: 10,
       sourceSnapshotId: 'latest-state',
       totalAsset: 6650,
+      totalProfitLoss: 50,
     })
   })
 
@@ -88,6 +90,7 @@ describe('portfolio return calculation', () => {
       positionValue: 800,
       sourceSnapshotId: 'late',
       totalAsset: 6700,
+      totalProfitLoss: 100,
     })
   })
 
@@ -114,6 +117,7 @@ describe('portfolio return calculation', () => {
       cashBalance: 6200,
       positionValue: 500,
       totalAsset: 6700,
+      totalProfitLoss: 100,
     })
   })
 

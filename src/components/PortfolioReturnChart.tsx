@@ -19,6 +19,7 @@ import {
   formatCurrency,
   formatNumber,
   formatShares,
+  formatSignedCurrency,
   formatSignedPercent,
 } from '../utils/formatters'
 import { SummaryItem } from './SummaryItem'
@@ -270,7 +271,10 @@ export function PortfolioReturnChart({
               >
                 <span>{visibleTooltip.point.date}</span>
                 <strong>{formatCurrency(visibleTooltip.point.totalAsset)}</strong>
-                <em>{formatSignedPercent(visibleTooltip.point.returnPercent)}</em>
+                <em>
+                  {formatSignedPercent(visibleTooltip.point.returnPercent)} ·{' '}
+                  {formatSignedCurrency(visibleTooltip.point.totalProfitLoss)}
+                </em>
                 <small>
                   잔금 {formatCurrency(visibleTooltip.point.cashBalance)} · 보유{' '}
                   {formatShares(visibleTooltip.point.shares)}

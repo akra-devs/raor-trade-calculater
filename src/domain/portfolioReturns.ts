@@ -32,6 +32,7 @@ export interface PortfolioReturnPoint {
   shares: number
   sourceSnapshotId?: string
   totalAsset: number
+  totalProfitLoss: number
 }
 
 export interface PortfolioReturnResult {
@@ -159,6 +160,7 @@ export function calculatePortfolioReturns({
 
     const positionValue = state.shares * candle.close
     const totalAsset = state.cashBalance + positionValue
+    const totalProfitLoss = totalAsset - budget
 
     points.push({
       averagePrice: roundMoney(state.averagePrice),
@@ -167,10 +169,11 @@ export function calculatePortfolioReturns({
       date: candle.date,
       executedRecordCount: state.executedRecordCount,
       positionValue: roundMoney(positionValue),
-      returnPercent: roundPercent(((totalAsset - budget) / budget) * 100),
+      returnPercent: roundPercent((totalProfitLoss / budget) * 100),
       shares: roundQuantity(state.shares),
       sourceSnapshotId: state.sourceSnapshotId,
       totalAsset: roundMoney(totalAsset),
+      totalProfitLoss: roundMoney(totalProfitLoss),
     })
   }
 
