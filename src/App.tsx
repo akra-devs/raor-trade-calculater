@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import './App.css'
 import { CandlestickChart } from './components/CandlestickChart'
+import { ExecutionAnalysisSection } from './components/ExecutionAnalysisSection'
+import {
+  EXECUTION_PAGE_SIZE,
+  ExecutionLedgerSection,
+} from './components/ExecutionLedgerSection'
+import { HistoryItem } from './components/HistoryItem'
+import { HistoryPagination } from './components/HistoryPagination'
+import { NoticeModal, ResultModal } from './components/ResultModal'
 import {
   PRICE_INTERVALS,
   aggregateCandles,
@@ -10,7 +18,11 @@ import {
   type DailyCandle,
   type PriceInterval,
 } from './domain/dailyPrices'
-import { calculateExecutionAnalysis } from './domain/executionAnalysis'
+import {
+  calculateExecutionAmounts,
+  type ExecutionRecord,
+  type ExecutionSide,
+} from './domain/executions'
 import {
   TRADE_COST_RATE,
   calculateProfitLoss,
@@ -30,112 +42,24 @@ import {
   type StrategyState,
   type StrategySymbol,
 } from './domain/strategy'
-
-type AverageInputMode = 'costBasis' | 'averagePrice'
-type CashInputMode = 'cashBalance' | 'budgetSpent'
-type ExecutionSide = 'buy' | 'sell'
-
-interface FormState {
-  symbol: StrategySymbol
-  splitCount: SplitCount
-  gainPercent: string
-  mode: Mode
-  turn: string
-  cashInputMode: CashInputMode
-  cashBalance: string
-  initialBudget: string
-  totalBuyAmount: string
-  shares: string
-  averageInputMode: AverageInputMode
-  costBasis: string
-  averagePrice: string
-  previousClose: string
-  reverseDays: string
-  recentCloses: string[]
-}
-
-interface OrderSnapshot {
-  id: string
-  createdAt: string
-  referenceDate?: string
-  input: FormState
-  profitLoss?: ProfitLossResult
-  result: GenerateOrdersResult
-}
-
-interface NextTurnPreview {
-  referenceDate?: string
-  executionCandle?: DailyCandle
-  calculation?: NextTurnCalculation
-  isReferenceDateInferred: boolean
-  message: string
-}
-
-interface MarketDataFile {
-  calendar?: string
-  provider?: string
-  symbol?: string
-  fetchedAt?: string
-  marketStatus?: unknown
-  missingTradingDays?: string[]
-  skippedClosedDays?: string[]
-  candles?: unknown
-}
-
-interface MarketStatus {
-  calendar?: string
-  date: string
-  isTradingDay: boolean
-  marketClose?: string
-  marketOpen?: string
-  nextTradingDay?: string
-  previousTradingDay?: string
-  status?: string
-  timezone?: string
-}
-
-interface ResultModalPayload {
-  eyebrow: string
-  title: string
-  result: GenerateOrdersResult
-}
-
-interface NoticeModalPayload {
-  details?: string[]
-  message: string
-  title: string
-}
-
-interface ExecutionRecord {
-  averagePriceAfter?: number
-  id: string
-  createdAt: string
-  date: string
-  feeAmount: number
-  feeRate: number
-  grossAmount: number
-  netCashFlow: number
-  note?: string
-  price: number
-  quantity: number
-  side: ExecutionSide
-  sharesAfter?: number
-  sourceOrderId?: string
-  sourceSnapshotId?: string
-  symbol: StrategySymbol
-}
-
-interface ExecutionSummary {
-  averagePrice?: number
-  buyAmount: number
-  buyQuantity: number
-  feeAmount: number
-  netCashFlow: number
-  netQuantity: number
-  positionQuantity: number
-  sellAmount: number
-  sellQuantity: number
-}
+import {
+  formatChange,
+  formatCurrency,
+  formatDateTime,
+  formatNumber,
+  formatOptionalCurrency,
+} from './utils/formatters'
+import type {
+  AverageInputMode,
+  CashInputMode,
+  FormState,
+  MarketDataFile,
+  MarketStatus,
+  NextTurnPreview,
+  NoticeModalPayload,
+  OrderSnapshot,
+  ResultModalPayload,
+} from './types/app'
 
 interface NumberFieldProps {
   id: string
@@ -154,7 +78,6 @@ const STORAGE_HISTORY_KEY = 'raor:v1:order-snapshots'
 const STORAGE_EXECUTIONS_KEY = 'raor:v1:executions'
 const PRICE_TABLE_PAGE_SIZE = 5
 const HISTORY_PAGE_SIZE = 4
-const EXECUTION_PAGE_SIZE = 10
 const EXECUTION_RECORD_LIMIT = 500
 
 const priceIntervalLabel: Record<PriceInterval, string> = {
@@ -192,16 +115,6 @@ function createDefaultFormForSymbol(symbol: StrategySymbol): FormState {
     gainPercent: String(getDefaultTargetProfitPercent(symbol)),
   }
 }
-
-const currencyFormatter = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
-  maximumFractionDigits: 2,
-})
-
-const numberFormatter = new Intl.NumberFormat('ko-KR', {
-  maximumFractionDigits: 2,
-})
 
 function App() {
   const [form, setForm] = useState<FormState>(() => loadFormState())
@@ -1185,17 +1098,25 @@ function App() {
               onPageChange={setHistoryPage}
             />
             <div className="history-list">
-              {historyPageRows.map((snapshot) => (
-                <HistoryItem
-                  key={snapshot.id}
-                  candles={dailyCandles[snapshot.input.symbol] ?? []}
-                  onApplyNextTurn={handleApplyNextTurn}
-                  onDelete={handleDeleteHistoryItem}
-                  onRestore={handleRestore}
-                  onShowOrders={handleShowHistoryOrders}
-                  snapshot={snapshot}
-                />
-              ))}
+              {historyPageRows.map((snapshot) => {
+                const candles = dailyCandles[snapshot.input.symbol] ?? []
+                const preview = getNextTurnPreview(snapshot, candles)
+                const profitLoss = getHistoryProfitLoss(snapshot, candles, preview)
+
+                return (
+                  <HistoryItem
+                    key={snapshot.id}
+                    defaultGainPercent={DEFAULT_FORM.gainPercent}
+                    onApplyNextTurn={handleApplyNextTurn}
+                    onDelete={handleDeleteHistoryItem}
+                    onRestore={handleRestore}
+                    onShowOrders={handleShowHistoryOrders}
+                    preview={preview}
+                    profitLoss={profitLoss}
+                    snapshot={snapshot}
+                  />
+                )
+              })}
             </div>
           </>
         )}
@@ -1224,671 +1145,6 @@ function App() {
         onStartDateChange={setExecutionAnalysisStartDate}
       />
     </main>
-  )
-}
-
-function ExecutionAnalysisSection({
-  endDate,
-  onEndDateChange,
-  onResetPeriod,
-  onStartDateChange,
-  records,
-  startDate,
-  symbol,
-}: {
-  endDate: string
-  onEndDateChange: (date: string) => void
-  onResetPeriod: () => void
-  onStartDateChange: (date: string) => void
-  records: ExecutionRecord[]
-  startDate: string
-  symbol: StrategySymbol
-}) {
-  const analysis = useMemo(
-    () =>
-      calculateExecutionAnalysis({
-        endDate,
-        records,
-        startDate,
-        symbol,
-      }),
-    [endDate, records, startDate, symbol],
-  )
-  const hasSymbolRecords = analysis.symbolRecordCount > 0
-  const hasPeriodFilter = Boolean(startDate || endDate)
-  const periodLabel = formatAnalysisPeriodLabel(analysis, hasPeriodFilter)
-  const metricValue = (value: string) => analysis.isInvalidPeriod ? '-' : value
-
-  return (
-    <section
-      className="panel execution-analysis-panel"
-      aria-labelledby="execution-analysis-title"
-    >
-      <div className="panel-heading">
-        <h2 id="execution-analysis-title">체결 분석</h2>
-        <div className="history-actions">
-          <span className="panel-stat">{symbol}</span>
-          <span className="panel-stat">{periodLabel}</span>
-          <span className="panel-stat">
-            분석 {analysis.matchedRecordCount}건
-          </span>
-        </div>
-      </div>
-
-      <div className="analysis-controls" aria-label="체결 분석 기간">
-        <label className="field" htmlFor="execution-analysis-start">
-          <span>시작일</span>
-          <input
-            id="execution-analysis-start"
-            type="date"
-            value={startDate}
-            onChange={(event) => onStartDateChange(event.target.value)}
-          />
-        </label>
-        <label className="field" htmlFor="execution-analysis-end">
-          <span>종료일</span>
-          <input
-            id="execution-analysis-end"
-            type="date"
-            value={endDate}
-            onChange={(event) => onEndDateChange(event.target.value)}
-          />
-        </label>
-        <button
-          type="button"
-          className="secondary-action compact"
-          disabled={!hasPeriodFilter}
-          onClick={onResetPeriod}
-        >
-          전체 기간
-        </button>
-      </div>
-
-      {analysis.isInvalidPeriod ? (
-        <div className="warning-list analysis-warning" role="status">
-          <div>기간을 확인하세요. 시작일은 종료일보다 늦을 수 없습니다.</div>
-        </div>
-      ) : null}
-
-      {!hasSymbolRecords ? (
-        <div className="empty-state">분석할 체결 기록 없음</div>
-      ) : (
-        <>
-          <div className="analysis-primary-grid" aria-label="체결 분석 핵심 지표">
-            <SummaryItem
-              emphasis
-              label="매도수량"
-              value={metricValue(formatShares(analysis.sellQuantity))}
-            />
-            <SummaryItem
-              emphasis
-              label="매도평단"
-              value={metricValue(formatOptionalCurrency(analysis.sellAveragePrice))}
-            />
-            <SummaryItem
-              emphasis
-              label="현재 수량"
-              value={metricValue(formatShares(analysis.positionQuantity))}
-            />
-            <SummaryItem
-              emphasis
-              label="현재 평단"
-              value={metricValue(formatOptionalCurrency(analysis.averagePrice))}
-            />
-          </div>
-
-          <div className="analysis-secondary-grid" aria-label="체결 분석 보조 지표">
-            <SummaryItem
-              label="매도 체결액"
-              value={metricValue(formatCurrency(analysis.sellAmount))}
-            />
-            <SummaryItem
-              label="매도 거래비용"
-              value={metricValue(formatCurrency(analysis.sellFeeAmount))}
-            />
-            <SummaryItem
-              label="매도 건수"
-              value={metricValue(`${formatNumber(analysis.sellRecordCount)}건`)}
-            />
-            <SummaryItem
-              label="분석 체결"
-              value={metricValue(`${formatNumber(analysis.matchedRecordCount)}건`)}
-            />
-          </div>
-        </>
-      )}
-    </section>
-  )
-}
-
-function ExecutionLedgerSection({
-  currentPage,
-  historyCount,
-  onApplyAll,
-  onClear,
-  onDelete,
-  onPageChange,
-  records,
-}: {
-  currentPage: number
-  historyCount: number
-  onApplyAll: () => void
-  onClear: () => void
-  onDelete: (recordId: string) => void
-  onPageChange: (page: number) => void
-  records: ExecutionRecord[]
-}) {
-  const summary = useMemo(() => calculateExecutionSummary(records), [records])
-  const pageCount = Math.max(1, Math.ceil(records.length / EXECUTION_PAGE_SIZE))
-  const boundedPage = Math.min(currentPage, pageCount)
-  const pageStart = (boundedPage - 1) * EXECUTION_PAGE_SIZE
-  const pageRows = records.slice(pageStart, pageStart + EXECUTION_PAGE_SIZE)
-
-  return (
-    <section className="panel execution-panel" aria-labelledby="execution-title">
-      <div className="panel-heading">
-        <h2 id="execution-title">체결 목록</h2>
-        <div className="history-actions">
-          <span className="panel-stat">
-            최근 {records.length}건 · {boundedPage} / {pageCount}
-          </span>
-          <button
-            type="button"
-            className="secondary-action compact"
-            disabled={historyCount === 0}
-            onClick={onApplyAll}
-          >
-            전체 체결 반영
-          </button>
-          <button
-            type="button"
-            className="text-action"
-            disabled={records.length === 0}
-            onClick={onClear}
-          >
-            비우기
-          </button>
-        </div>
-      </div>
-
-      <div className="execution-summary-grid" aria-label="체결 요약">
-        <SummaryItem label="매수 체결액" value={formatCurrency(summary.buyAmount)} />
-        <SummaryItem label="매도 체결액" value={formatCurrency(summary.sellAmount)} />
-        <SummaryItem label="수량" value={formatShares(summary.positionQuantity)} />
-        <SummaryItem label="추정 평단가" value={formatOptionalCurrency(summary.averagePrice)} />
-        <SummaryItem label="거래비용" value={formatCurrency(summary.feeAmount)} />
-        <SummaryItem
-          label="잔금 변화"
-          value={formatSignedCurrency(summary.netCashFlow)}
-        />
-      </div>
-
-      {records.length === 0 ? (
-        <div className="empty-state">체결 기록 없음</div>
-      ) : (
-        <>
-          <HistoryPagination
-            ariaLabel="체결 목록 페이지"
-            currentPage={boundedPage}
-            pageCount={pageCount}
-            pageEnd={Math.min(pageStart + EXECUTION_PAGE_SIZE, records.length)}
-            pageStart={pageStart + 1}
-            totalCount={records.length}
-            onPageChange={onPageChange}
-          />
-          <div className="table-wrap execution-table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th scope="col">체결일자</th>
-                  <th scope="col">종목</th>
-                  <th scope="col">구분</th>
-                  <th scope="col">가격</th>
-                  <th scope="col">수량</th>
-                  <th scope="col">체결금액</th>
-                  <th scope="col">거래비용</th>
-                  <th scope="col">잔금 변화</th>
-                  <th scope="col">메모</th>
-                  <th scope="col">삭제</th>
-                </tr>
-              </thead>
-              <tbody>
-                {pageRows.map((record) => (
-                  <tr key={record.id}>
-                    <td>
-                      <strong>{record.date}</strong>
-                      <small>{formatDateTime(record.createdAt)}</small>
-                    </td>
-                    <td>{record.symbol}</td>
-                    <td>
-                      <span className={`side-badge ${record.side}`}>
-                        {record.side === 'buy' ? '매수' : '매도'}
-                      </span>
-                    </td>
-                    <td>{formatCurrency(record.price)}</td>
-                    <td>{formatNumber(record.quantity)}주</td>
-                    <td>{formatCurrency(record.grossAmount)}</td>
-                    <td>
-                      {formatCurrency(record.feeAmount)}
-                      <small>{formatNumber(record.feeRate * 100)}%</small>
-                    </td>
-                    <td>
-                      <strong
-                        className={
-                          record.netCashFlow >= 0 ? 'amount-positive' : 'amount-negative'
-                        }
-                      >
-                        {formatSignedCurrency(record.netCashFlow)}
-                      </strong>
-                    </td>
-                    <td>{record.note || '-'}</td>
-                    <td>
-                      <button
-                        type="button"
-                        className="icon-action danger-action"
-                        aria-label={`${record.symbol} ${record.date} 체결 기록 삭제`}
-                        title="삭제"
-                        onClick={() => onDelete(record.id)}
-                      >
-                        <TrashIcon />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </>
-      )}
-    </section>
-  )
-}
-
-function TrashIcon() {
-  return (
-    <svg
-      aria-hidden="true"
-      className="trash-icon"
-      fill="none"
-      height="18"
-      viewBox="0 0 24 24"
-      width="18"
-    >
-      <path
-        d="M3 6h18"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="2"
-      />
-      <path
-        d="M8 6V4h8v2"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="2"
-      />
-      <path
-        d="M19 6l-1 14H6L5 6"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="2"
-      />
-      <path
-        d="M10 11v5M14 11v5"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="2"
-      />
-    </svg>
-  )
-}
-
-function HistoryPagination({
-  ariaLabel = '저장된 주문 기록 페이지',
-  currentPage,
-  onPageChange,
-  pageCount,
-  pageEnd,
-  pageStart,
-  totalCount,
-}: {
-  ariaLabel?: string
-  currentPage: number
-  onPageChange: (page: number) => void
-  pageCount: number
-  pageEnd: number
-  pageStart: number
-  totalCount: number
-}) {
-  return (
-    <div className="history-pagination" aria-label={ariaLabel}>
-      <span>
-        {pageStart}-{pageEnd} / {totalCount}
-      </span>
-      <div className="pagination-controls">
-        <button
-          type="button"
-          className="text-action"
-          disabled={currentPage <= 1}
-          onClick={() => onPageChange(Math.max(1, currentPage - 1))}
-        >
-          이전
-        </button>
-        <span>
-          {currentPage} / {pageCount}
-        </span>
-        <button
-          type="button"
-          className="text-action"
-          disabled={currentPage >= pageCount}
-          onClick={() => onPageChange(Math.min(pageCount, currentPage + 1))}
-        >
-          다음
-        </button>
-      </div>
-    </div>
-  )
-}
-
-function HistoryItem({
-  candles,
-  onApplyNextTurn,
-  onDelete,
-  onRestore,
-  onShowOrders,
-  snapshot,
-}: {
-  candles: DailyCandle[]
-  onApplyNextTurn: (snapshot: OrderSnapshot, preview: NextTurnPreview) => void
-  onDelete: (snapshotId: string) => void
-  onRestore: (snapshot: OrderSnapshot) => void
-  onShowOrders: (snapshot: OrderSnapshot) => void
-  snapshot: OrderSnapshot
-}) {
-  const preview = getNextTurnPreview(snapshot, candles)
-  const profitLoss = getHistoryProfitLoss(snapshot, candles, preview)
-
-  return (
-    <article className="history-item">
-      <div>
-        <strong>
-          {snapshot.input.symbol} · {modeLabel(snapshot.result.summary.effectiveMode)}
-        </strong>
-        <span>{formatDateTime(snapshot.createdAt)}</span>
-      </div>
-      <div className="history-meta">
-        <span>{snapshot.result.orders.length}건</span>
-        <span>목표 {snapshot.input.gainPercent ?? DEFAULT_FORM.gainPercent}%</span>
-        <span>T {snapshot.input.turn}</span>
-        <span>{snapshot.input.splitCount}분할</span>
-      </div>
-      <HistoryProfitLoss profitLoss={profitLoss} />
-      <HistoryNextTurnPreview
-        onApply={() => onApplyNextTurn(snapshot, preview)}
-        preview={preview}
-        snapshot={snapshot}
-      />
-      <div className="history-item-actions">
-        <button
-          type="button"
-          className="secondary-action compact restore-action"
-          onClick={() => onRestore(snapshot)}
-        >
-          입력값 불러오기
-        </button>
-        <button
-          type="button"
-          className="secondary-action compact detail-action"
-          onClick={() => onShowOrders(snapshot)}
-        >
-          주문 상세
-        </button>
-        <button
-          type="button"
-          className="icon-action danger-action delete-action"
-          aria-label={`${snapshot.input.symbol} ${formatDateTime(snapshot.createdAt)} 주문 기록 삭제`}
-          title="삭제"
-          onClick={() => onDelete(snapshot.id)}
-        >
-          <TrashIcon />
-        </button>
-      </div>
-    </article>
-  )
-}
-
-function HistoryProfitLoss({
-  profitLoss,
-}: {
-  profitLoss?: ProfitLossResult
-}) {
-  if (!profitLoss) {
-    return (
-      <div className="history-pnl-card muted">
-        <span>누적손익</span>
-        <strong>-</strong>
-        <small>예산과 기준가를 확인하세요</small>
-      </div>
-    )
-  }
-
-  const tone =
-    profitLoss.totalProfitLoss > 0
-      ? 'positive'
-      : profitLoss.totalProfitLoss < 0
-        ? 'negative'
-        : 'neutral'
-
-  return (
-    <div className={`history-pnl-card ${tone}`}>
-      <span>누적손익</span>
-      <strong>{formatSignedCurrency(profitLoss.totalProfitLoss)}</strong>
-      <small>예산대비 {formatSignedPercent(profitLoss.budgetReturnPercent)}</small>
-      {typeof profitLoss.buyAmountReturnPercent === 'number' ? (
-        <small>매수금액대비 {formatSignedPercent(profitLoss.buyAmountReturnPercent)}</small>
-      ) : null}
-      <small>
-        {profitLoss.markDate ?? '기준가'} · {formatNumber(TRADE_COST_RATE * 100)}%
-        비용 {formatCurrency(profitLoss.totalFees)} · 체결추정{' '}
-        {profitLoss.executedOrderCount}건
-      </small>
-    </div>
-  )
-}
-
-function HistoryNextTurnPreview({
-  onApply,
-  preview,
-  snapshot,
-}: {
-  onApply: () => void
-  preview: NextTurnPreview
-  snapshot: OrderSnapshot
-}) {
-  if (!preview.calculation || !preview.executionCandle) {
-    return (
-      <div className="history-next-turn muted">
-        <span>다음 T</span>
-        <strong>-</strong>
-        <small>{preview.message}</small>
-      </div>
-    )
-  }
-
-  const executedLabels = preview.calculation.executedOrderTags.map(
-    (tag) =>
-      snapshot.result.orders.find((order) => order.tag === tag)?.label ?? tag,
-  )
-  const executionSummary =
-    executedLabels.length > 0 ? executedLabels.join(', ') : '체결 없음'
-
-  return (
-    <div className="history-next-turn">
-      <div>
-        <span>
-          {preview.referenceDate ?? '-'} → {preview.executionCandle.date}
-        </span>
-        <strong>
-          T {formatNumber(preview.calculation.previousTurn)} →{' '}
-          {formatNumber(preview.calculation.nextTurn)} · 보유{' '}
-          {formatNumber(preview.calculation.previousShares)} →{' '}
-          {formatNumber(preview.calculation.nextShares)}주
-        </strong>
-        <small>
-          종가 {formatCurrency(preview.executionCandle.close)}
-          {preview.calculation.usedHighForLimitSell
-            ? ` · 지정가 고가 ${formatCurrency(preview.executionCandle.high)} 추정`
-            : ''}
-          {preview.isReferenceDateInferred ? ' · 기준일 추정' : ''}
-        </small>
-        <small>
-          잔금 {formatCurrency(preview.calculation.nextCashBalance)} · 추정 평단가{' '}
-          {formatCurrency(preview.calculation.nextAveragePrice)}
-        </small>
-        <small>{executionSummary}</small>
-      </div>
-      <button type="button" className="secondary-action compact" onClick={onApply}>
-        체결 추정 반영
-      </button>
-    </div>
-  )
-}
-
-function ResultModal({
-  eyebrow,
-  onClose,
-  result,
-  title,
-}: {
-  eyebrow: string
-  onClose: () => void
-  result: GenerateOrdersResult
-  title: string
-}) {
-  useEffect(() => {
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
-        onClose()
-      }
-    }
-
-    const previousOverflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    window.addEventListener('keydown', handleKeyDown)
-
-    return () => {
-      document.body.style.overflow = previousOverflow
-      window.removeEventListener('keydown', handleKeyDown)
-    }
-  }, [onClose])
-
-  return (
-    <div
-      className="result-modal-backdrop"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) {
-          onClose()
-        }
-      }}
-    >
-      <section
-        aria-labelledby="result-modal-title"
-        aria-modal="true"
-        className="result-modal"
-        role="dialog"
-      >
-        <div className="result-modal-head">
-          <div>
-            <span>{eyebrow}</span>
-            <h2 id="result-modal-title">{title}</h2>
-          </div>
-          <div className="result-modal-actions">
-            <span className="panel-stat">{result.orders.length}건</span>
-            <button type="button" className="secondary-action compact" onClick={onClose}>
-              닫기
-            </button>
-          </div>
-        </div>
-
-        <div className="result-modal-body">
-          <Summary result={result} />
-          <Warnings result={result} />
-          <OrdersTable result={result} />
-        </div>
-      </section>
-    </div>
-  )
-}
-
-function NoticeModal({
-  details,
-  message,
-  onClose,
-  title,
-}: {
-  details?: string[]
-  message: string
-  onClose: () => void
-  title: string
-}) {
-  useEffect(() => {
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
-        onClose()
-      }
-    }
-
-    const previousOverflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    window.addEventListener('keydown', handleKeyDown)
-
-    return () => {
-      document.body.style.overflow = previousOverflow
-      window.removeEventListener('keydown', handleKeyDown)
-    }
-  }, [onClose])
-
-  return (
-    <div
-      className="result-modal-backdrop"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) {
-          onClose()
-        }
-      }}
-    >
-      <section
-        aria-labelledby="notice-modal-title"
-        aria-modal="true"
-        className="result-modal notice-modal"
-        role="dialog"
-      >
-        <div className="result-modal-head notice-modal-head">
-          <div>
-            <span>저장된 주문 기록</span>
-            <h2 id="notice-modal-title">{title}</h2>
-          </div>
-          <button type="button" className="secondary-action compact" onClick={onClose}>
-            닫기
-          </button>
-        </div>
-        <div className="notice-modal-body">
-          <p>{message}</p>
-          {details && details.length > 0 ? (
-            <div className="notice-detail-list">
-              {details.map((detail) => (
-                <span key={detail}>{detail}</span>
-              ))}
-            </div>
-          ) : null}
-        </div>
-      </section>
-    </div>
   )
 }
 
@@ -2133,61 +1389,6 @@ function AverageInputField({
   )
 }
 
-function Summary({ result }: { result: GenerateOrdersResult }) {
-  const { summary } = result
-  const buyBudget =
-    summary.effectiveMode === 'reverse'
-      ? summary.reverseBuyBudget
-      : summary.oneBuyAmount
-  const buyBudgetLabel =
-    summary.effectiveMode === 'reverse' ? '리버스 매수금' : '1회매수금'
-  const referenceLabel =
-    summary.effectiveMode === 'reverse' ? '5일 평균' : '전일 종가'
-
-  return (
-    <div className="summary-grid" aria-label="계산 요약">
-      <SummaryItem label="모드" value={modeLabel(summary.effectiveMode)} />
-      {summary.effectiveMode === 'normal' ? (
-        <SummaryItem label="별%" value={`${formatNumber(summary.starPercent)}%`} />
-      ) : null}
-      <SummaryItem
-        label={buyBudgetLabel}
-        value={
-          typeof buyBudget === 'number' ? formatCurrency(buyBudget) : '-'
-        }
-      />
-      <SummaryItem label="목표가" value={formatOptionalCurrency(summary.targetPrice)} />
-      <SummaryItem
-        label="별 매도가"
-        value={formatOptionalCurrency(summary.starSellPrice)}
-      />
-      <SummaryItem
-        label="별 매수가"
-        value={formatOptionalCurrency(summary.starBuyPrice)}
-      />
-      <SummaryItem label={referenceLabel} value={formatOptionalCurrency(summary.referenceClose)} />
-      <SummaryItem label="원금 기준" value={formatCurrency(summary.capitalBase)} />
-    </div>
-  )
-}
-
-function SummaryItem({
-  emphasis = false,
-  label,
-  value,
-}: {
-  emphasis?: boolean
-  label: string
-  value: string
-}) {
-  return (
-    <div className={emphasis ? 'summary-item emphasis' : 'summary-item'}>
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  )
-}
-
 function MarketStatusBadge({ status }: { status?: MarketStatus }) {
   const tone = !status ? 'unknown' : status.isTradingDay ? 'open' : 'closed'
 
@@ -2196,135 +1397,6 @@ function MarketStatusBadge({ status }: { status?: MarketStatus }) {
       {formatMarketStatusLabel(status)}
     </span>
   )
-}
-
-function formatAnalysisPeriodLabel(
-  analysis: ReturnType<typeof calculateExecutionAnalysis>,
-  hasPeriodFilter: boolean,
-): string {
-  if (analysis.isInvalidPeriod) {
-    return '기간 오류'
-  }
-
-  if (!hasPeriodFilter) {
-    return '전체 기간'
-  }
-
-  const start = analysis.effectiveStartDate ?? '처음'
-  const end = analysis.effectiveEndDate ?? '최신'
-
-  return start === end ? start : `${start} ~ ${end}`
-}
-
-function Warnings({ result }: { result: GenerateOrdersResult }) {
-  if (result.warnings.length === 0) {
-    return null
-  }
-
-  return (
-    <div className="warning-list" role="status" aria-label="경고">
-      {result.warnings.map((warning, index) => (
-        <div key={`${warning.code}-${warning.tag ?? index}`}>{warning.message}</div>
-      ))}
-    </div>
-  )
-}
-
-function OrdersTable({ result }: { result: GenerateOrdersResult }) {
-  if (result.orders.length === 0) {
-    return <div className="empty-state">생성 주문 없음</div>
-  }
-
-  return (
-    <div className="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th scope="col">구분</th>
-            <th scope="col">주문</th>
-            <th scope="col">유형</th>
-            <th scope="col">수량</th>
-            <th scope="col">주문 기준</th>
-            <th scope="col">배정금</th>
-            <th scope="col">예상 주문금액</th>
-          </tr>
-        </thead>
-        <tbody>
-          {result.orders.map((order) => (
-            <tr key={order.id}>
-              <td>
-                <span className={`side-badge ${order.side}`}>
-                  {order.side === 'buy' ? '매수' : '매도'}
-                </span>
-              </td>
-              <td>
-                <strong>{order.label}</strong>
-                {order.note ? <small>{order.note}</small> : null}
-              </td>
-              <td>{order.type}</td>
-              <td>{formatNumber(order.quantity)}주</td>
-              <OrderPriceCell order={order} />
-              <td>{order.side === 'buy' ? formatOptionalCurrency(order.amount) : '-'}</td>
-              <td>{formatOptionalCurrency(calculateOrderNotional(order))}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
-function OrderPriceCell({ order }: { order: GenerateOrdersResult['orders'][number] }) {
-  const condition = getOrderCondition(order)
-
-  return (
-    <td>
-      <div className={`order-condition ${condition.direction}`}>
-        <span aria-hidden="true">{condition.marker}</span>
-        <strong>{condition.label}</strong>
-      </div>
-    </td>
-  )
-}
-
-function getOrderCondition(order: GenerateOrdersResult['orders'][number]) {
-  if (order.type === 'MOC' || typeof order.price !== 'number') {
-    return {
-      direction: 'neutral',
-      label: '장마감 시장가',
-      marker: 'MOC',
-    }
-  }
-
-  if (order.type === 'LOC' && order.side === 'buy') {
-    return {
-      direction: 'down',
-      label: `종가 ≤ ${formatCurrency(order.price)}`,
-      marker: '↓',
-    }
-  }
-
-  if (order.type === 'LOC') {
-    return {
-      direction: 'up',
-      label: `종가 ≥ ${formatCurrency(order.price)}`,
-      marker: '↑',
-    }
-  }
-
-  return {
-    direction: 'neutral',
-    label: `지정가 ${formatCurrency(order.price)}`,
-    marker: 'LIMIT',
-  }
-}
-
-function calculateOrderNotional(order: GenerateOrdersResult['orders'][number]) {
-  if (typeof order.price !== 'number') {
-    return undefined
-  }
-
-  return order.quantity * order.price
 }
 
 function DailyPriceTable({
@@ -2975,90 +2047,6 @@ function normalizeExecutionRecord(value: unknown): ExecutionRecord[] {
   ]
 }
 
-function calculateExecutionAmounts(
-  side: ExecutionSide,
-  price: number,
-  quantity: number,
-  feeRate: number,
-): Pick<ExecutionRecord, 'feeAmount' | 'grossAmount' | 'netCashFlow'> {
-  const grossAmount = roundMoney(price * quantity)
-  const feeAmount = roundMoney(grossAmount * feeRate)
-  const netCashFlow =
-    side === 'buy'
-      ? -roundMoney(grossAmount + feeAmount)
-      : roundMoney(grossAmount - feeAmount)
-
-  return {
-    feeAmount,
-    grossAmount,
-    netCashFlow,
-  }
-}
-
-function calculateExecutionSummary(records: ExecutionRecord[]): ExecutionSummary {
-  const summary: ExecutionSummary = {
-    buyAmount: 0,
-    buyQuantity: 0,
-    feeAmount: 0,
-    netCashFlow: 0,
-    netQuantity: 0,
-    positionQuantity: 0,
-    sellAmount: 0,
-    sellQuantity: 0,
-  }
-  let costBasis = 0
-  let positionQuantity = 0
-
-  for (const record of [...records].reverse()) {
-    if (record.side === 'buy') {
-      summary.buyAmount += record.grossAmount
-      summary.buyQuantity += record.quantity
-      summary.netQuantity += record.quantity
-      positionQuantity += record.quantity
-      costBasis += record.grossAmount + record.feeAmount
-    } else {
-      summary.sellAmount += record.grossAmount
-      summary.sellQuantity += record.quantity
-      summary.netQuantity -= record.quantity
-
-      const matchedSellQuantity = Math.min(record.quantity, positionQuantity)
-
-      if (matchedSellQuantity > 0 && positionQuantity > 0) {
-        costBasis *= (positionQuantity - matchedSellQuantity) / positionQuantity
-        positionQuantity -= matchedSellQuantity
-      }
-    }
-
-    summary.feeAmount += record.feeAmount
-    summary.netCashFlow += record.netCashFlow
-  }
-
-  const latestPositionRecord = records.find(
-    (record) =>
-      typeof record.sharesAfter === 'number' &&
-      record.sharesAfter >= 0,
-  )
-
-  if (latestPositionRecord) {
-    summary.positionQuantity = roundQuantity(latestPositionRecord.sharesAfter ?? 0)
-  } else {
-    summary.positionQuantity = roundQuantity(positionQuantity)
-  }
-
-  if (
-    latestPositionRecord &&
-    summary.positionQuantity > 0 &&
-    typeof latestPositionRecord.averagePriceAfter === 'number' &&
-    latestPositionRecord.averagePriceAfter > 0
-  ) {
-    summary.averagePrice = roundMoney(latestPositionRecord.averagePriceAfter)
-  } else if (positionQuantity > 0 && costBasis > 0) {
-    summary.averagePrice = roundMoney(costBasis / positionQuantity)
-  }
-
-  return summary
-}
-
 function normalizeFormState(value: unknown): FormState {
   const source = isRecord(value) ? value : {}
   const symbol = isStrategySymbol(source.symbol) ? source.symbol : DEFAULT_FORM.symbol
@@ -3564,66 +2552,6 @@ function createSnapshotId(): string {
   }
 
   return `${Date.now()}`
-}
-
-function formatCurrency(value: number): string {
-  return currencyFormatter.format(value)
-}
-
-function formatOptionalCurrency(value?: number): string {
-  return typeof value === 'number' ? formatCurrency(value) : '-'
-}
-
-function formatSignedCurrency(value: number): string {
-  if (value === 0) {
-    return formatCurrency(0)
-  }
-
-  const sign = value > 0 ? '+' : '-'
-  return `${sign}${formatCurrency(Math.abs(value))}`
-}
-
-function formatShares(value: number): string {
-  return `${formatNumber(Math.max(0, value))}주`
-}
-
-function formatNumber(value: number): string {
-  return numberFormatter.format(value)
-}
-
-function formatSignedPercent(value: number): string {
-  if (value === 0) {
-    return '0%'
-  }
-
-  const sign = value > 0 ? '+' : '-'
-  return `${sign}${formatNumber(Math.abs(value))}%`
-}
-
-function formatChange(value?: number): string {
-  if (typeof value !== 'number') {
-    return '-'
-  }
-
-  const sign = value > 0 ? '+' : ''
-  return `${sign}${formatNumber(value)}%`
-}
-
-function formatDateTime(value: string): string {
-  const date = new Date(value)
-
-  if (Number.isNaN(date.getTime())) {
-    return value
-  }
-
-  return new Intl.DateTimeFormat('ko-KR', {
-    dateStyle: 'short',
-    timeStyle: 'short',
-  }).format(date)
-}
-
-function modeLabel(mode: Mode): string {
-  return mode === 'normal' ? '일반' : '리버스'
 }
 
 export default App
