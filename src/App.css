@@ -101,7 +101,8 @@ h2 {
 
 .input-panel,
 .history-panel,
-.execution-panel {
+.execution-panel,
+.execution-analysis-panel {
   padding: 24px 28px;
 }
 
@@ -940,7 +941,8 @@ button:focus-visible {
   margin-bottom: 32px;
 }
 
-.execution-panel {
+.execution-panel,
+.execution-analysis-panel {
   display: grid;
   gap: 16px;
   margin-bottom: 32px;
@@ -1363,6 +1365,50 @@ button:focus-visible {
   gap: 10px;
 }
 
+.analysis-controls {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.35fr) minmax(180px, 0.35fr) auto;
+  align-items: end;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+}
+
+.analysis-controls button {
+  min-width: 112px;
+}
+
+.analysis-warning {
+  margin: 0;
+}
+
+.analysis-primary-grid,
+.analysis-secondary-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.analysis-primary-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.analysis-secondary-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.summary-item.emphasis {
+  min-height: 86px;
+  background: #fff;
+  border-color: var(--line-strong);
+}
+
+.summary-item.emphasis strong {
+  font-size: 22px;
+}
+
 .execution-table-wrap {
   margin-top: 0;
 }
@@ -1469,6 +1515,11 @@ button:focus-visible {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
+  .analysis-primary-grid,
+  .analysis-secondary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .market-control-band {
     grid-template-columns: 1fr;
   }
@@ -1544,6 +1595,8 @@ button:focus-visible {
   .form-grid,
   .summary-grid,
   .execution-summary-grid,
+  .analysis-primary-grid,
+  .analysis-secondary-grid,
   .close-grid,
   .strategy-fields,
   .account-fields,
@@ -1617,6 +1670,14 @@ button:focus-visible {
   .history-pagination {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .analysis-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .analysis-controls button {
+    width: 100%;
   }
 }
 
