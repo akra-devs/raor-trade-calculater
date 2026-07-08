@@ -9,6 +9,7 @@ import {
 import { HistoryItem } from './components/HistoryItem'
 import { HistoryPagination } from './components/HistoryPagination'
 import { NoticeModal, ResultModal } from './components/ResultModal'
+import { PortfolioReturnChart } from './components/PortfolioReturnChart'
 import {
   PRICE_INTERVALS,
   aggregateCandles,
@@ -21,23 +22,40 @@ import {
 import {
   calculateExecutionAmounts,
   type ExecutionRecord,
-  type ExecutionSide,
 } from './domain/executions'
 import {
   TRADE_COST_RATE,
   calculateProfitLoss,
-  type ExecutedProfitLossOrder,
   type ProfitLossResult,
 } from './domain/profitLoss'
+import {
+  calculatePortfolioReturns,
+  type PortfolioReturnCheckpoint,
+} from './domain/portfolioReturns'
+import {
+  DEFAULT_FORM,
+  PROFILE_EXECUTION_RECORD_LIMIT,
+  createDefaultFormForSymbol,
+  createProfileFromActive,
+  deleteProfile,
+  getActiveProfile,
+  loadProfileStore,
+  normalizeDateInput,
+  normalizeFormState,
+  renameProfile,
+  saveProfileStore,
+  setActiveProfileId,
+  symbolOptions,
+  updateProfile,
+  withProfileForm,
+} from './domain/profiles'
 import {
   SUPPORTED_SPLITS,
   calculateNextTurnFromExecution,
   generateOrders,
-  getDefaultTargetProfitPercent,
   getStrategyConfig,
   type GenerateOrdersResult,
   type NextTurnCalculation,
-  type Mode,
   type SplitCount,
   type StrategyState,
   type StrategySymbol,
@@ -58,6 +76,8 @@ import type {
   NextTurnPreview,
   NoticeModalPayload,
   OrderSnapshot,
+  Profile,
+  ProfileStore,
   ResultModalPayload,
 } from './types/app'
 
@@ -72,13 +92,11 @@ interface NumberFieldProps {
   suffix?: string
 }
 
-const STORAGE_INPUT_KEY = 'raor:v1:input'
-const STORAGE_SYMBOL_INPUTS_KEY = 'raor:v1:symbol-inputs'
-const STORAGE_HISTORY_KEY = 'raor:v1:order-snapshots'
-const STORAGE_EXECUTIONS_KEY = 'raor:v1:executions'
 const PRICE_TABLE_PAGE_SIZE = 5
 const HISTORY_PAGE_SIZE = 4
-const EXECUTION_RECORD_LIMIT = 500
+const EXECUTION_RECORD_LIMIT = PROFILE_EXECUTION_RECORD_LIMIT
+
+type WorkspaceTab = 'analysis' | 'executions' | 'history' | 'prices' | 'returns'
 
 const priceIntervalLabel: Record<PriceInterval, string> = {
   day: '일봉',
@@ -87,50 +105,32 @@ const priceIntervalLabel: Record<PriceInterval, string> = {
   year: '년봉',
 }
 
-const DEFAULT_FORM: FormState = {
-  symbol: 'TQQQ',
-  splitCount: 20,
-  gainPercent: String(getDefaultTargetProfitPercent('TQQQ')),
-  mode: 'normal',
-  turn: '0',
-  cashInputMode: 'cashBalance',
-  cashBalance: '40000',
-  initialBudget: '40000',
-  totalBuyAmount: '',
-  shares: '0',
-  averageInputMode: 'costBasis',
-  costBasis: '',
-  averagePrice: '0',
-  previousClose: '100',
-  reverseDays: '0',
-  recentCloses: ['', '', '', '', ''],
-}
-
-const symbolOptions: StrategySymbol[] = ['TQQQ', 'SOXL']
-
-function createDefaultFormForSymbol(symbol: StrategySymbol): FormState {
-  return {
-    ...DEFAULT_FORM,
-    symbol,
-    gainPercent: String(getDefaultTargetProfitPercent(symbol)),
-  }
-}
+const workspaceTabs: Array<{ id: WorkspaceTab; label: string }> = [
+  { id: 'prices', label: '가격 데이터' },
+  { id: 'returns', label: '수익률 그래프' },
+  { id: 'history', label: '저장된 주문 기록' },
+  { id: 'executions', label: '체결 목록' },
+  { id: 'analysis', label: '체결 분석' },
+]
 
 function App() {
-  const [form, setForm] = useState<FormState>(() => loadFormState())
-  const [symbolForms, setSymbolForms] = useState<Record<StrategySymbol, FormState>>(
-    () => loadSymbolFormStates(form),
+  const [profileStore, setProfileStore] = useState<ProfileStore>(() =>
+    loadProfileStore(),
   )
+  const activeProfile = useMemo(
+    () => getActiveProfile(profileStore),
+    [profileStore],
+  )
+  const form = activeProfile.form
+  const symbolForms = activeProfile.symbolForms
+  const history = activeProfile.history
+  const executions = activeProfile.executions
+  const executionAnalysisEndDate = activeProfile.executionAnalysisEndDate
+  const executionAnalysisStartDate = activeProfile.executionAnalysisStartDate
   const [resultModal, setResultModal] = useState<ResultModalPayload | null>(null)
   const [noticeModal, setNoticeModal] = useState<NoticeModalPayload | null>(null)
-  const [history, setHistory] = useState<OrderSnapshot[]>(() => loadHistory())
   const [historyPage, setHistoryPage] = useState(1)
   const [executionPage, setExecutionPage] = useState(1)
-  const [executionAnalysisEndDate, setExecutionAnalysisEndDate] = useState('')
-  const [executionAnalysisStartDate, setExecutionAnalysisStartDate] = useState('')
-  const [executions, setExecutions] = useState<ExecutionRecord[]>(() =>
-    loadExecutions(),
-  )
   const [dailyCandles, setDailyCandles] = useState<
     Record<StrategySymbol, DailyCandle[]>
   >(() => ({ TQQQ: [], SOXL: [] }))
@@ -140,8 +140,91 @@ function App() {
   const [priceMessage, setPriceMessage] = useState('')
   const [marketDataLoading, setMarketDataLoading] = useState(false)
   const [priceInterval, setPriceInterval] = useState<PriceInterval>('day')
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>('prices')
   const [selectedDate, setSelectedDate] = useState('')
   const [showRecentCloses, setShowRecentCloses] = useState(false)
+  const persistProfileStoreUpdate = useCallback(
+    (updater: (current: ProfileStore) => ProfileStore) => {
+      setProfileStore((current) => {
+        const nextStore = updater(current)
+        saveProfileStore(nextStore)
+
+        return nextStore
+      })
+    },
+    [],
+  )
+  const updateActiveProfileState = useCallback(
+    (updater: (profile: Profile) => Profile) => {
+      const profileId = activeProfile.id
+
+      persistProfileStoreUpdate((current) =>
+        updateProfile(current, profileId, updater),
+      )
+    },
+    [activeProfile.id, persistProfileStoreUpdate],
+  )
+  const replaceActiveForm = useCallback(
+    (nextForm: FormState) => {
+      updateActiveProfileState((profile) => withProfileForm(profile, nextForm))
+    },
+    [updateActiveProfileState],
+  )
+  const updateActiveForm = useCallback(
+    (updater: (current: FormState) => FormState) => {
+      updateActiveProfileState((profile) =>
+        withProfileForm(profile, updater(profile.form)),
+      )
+    },
+    [updateActiveProfileState],
+  )
+  const replaceActiveHistory = useCallback(
+    (nextHistory: OrderSnapshot[]) => {
+      updateActiveProfileState((profile) => ({
+        ...profile,
+        history: nextHistory,
+      }))
+    },
+    [updateActiveProfileState],
+  )
+  const replaceActiveExecutions = useCallback(
+    (nextExecutions: ExecutionRecord[]) => {
+      updateActiveProfileState((profile) => ({
+        ...profile,
+        executions: nextExecutions,
+      }))
+    },
+    [updateActiveProfileState],
+  )
+  const setExecutionAnalysisStartDate = useCallback(
+    (startDate: string) => {
+      updateActiveProfileState((profile) => ({
+        ...profile,
+        executionAnalysisStartDate: startDate
+          ? normalizeDateInput(startDate) ?? ''
+          : '',
+      }))
+    },
+    [updateActiveProfileState],
+  )
+  const setExecutionAnalysisEndDate = useCallback(
+    (endDate: string) => {
+      updateActiveProfileState((profile) => ({
+        ...profile,
+        executionAnalysisEndDate: endDate
+          ? normalizeDateInput(endDate) ?? ''
+          : '',
+      }))
+    },
+    [updateActiveProfileState],
+  )
+  const resetExecutionAnalysisPeriod = useCallback(() => {
+    updateActiveProfileState((profile) => ({
+      ...profile,
+      executionAnalysisStartDate: '',
+      executionAnalysisEndDate: '',
+    }))
+  }, [updateActiveProfileState])
   const selectedConfig = useMemo(
     () =>
       getStrategyConfig(
@@ -181,9 +264,51 @@ function App() {
     () => getOrderDateForReferenceDate(activeDailyCandles, effectiveSelectedDate),
     [activeDailyCandles, effectiveSelectedDate],
   )
+  const portfolioValuationDate = selectedOrderDate ?? effectiveSelectedDate
   const dateOptions = useMemo(
     () => [...sortDailyCandles(activeDailyCandles)].reverse(),
     [activeDailyCandles],
+  )
+  const portfolioCheckpoints = useMemo<PortfolioReturnCheckpoint[]>(
+    () =>
+      history.flatMap((snapshot) => {
+        const preview = getNextTurnPreview(
+          snapshot,
+          dailyCandles[snapshot.input.symbol] ?? [],
+        )
+
+        if (!preview.calculation || !preview.executionCandle) {
+          return []
+        }
+
+        return [
+          {
+            averagePrice: preview.calculation.nextAveragePrice,
+            budget: getProfitLossBudget(snapshot.input, snapshot.result),
+            cashBalance: preview.calculation.nextCashBalance,
+            date: preview.executionCandle.date,
+            executedRecordCount: preview.calculation.executedOrderTags.length,
+            shares: preview.calculation.nextShares,
+            sourceCreatedAt: snapshot.createdAt,
+            sourceSnapshotId: snapshot.id,
+            symbol: snapshot.input.symbol,
+          },
+        ]
+      }),
+    [dailyCandles, history],
+  )
+  const portfolioCheckpointCount = portfolioCheckpoints.filter(
+    (checkpoint) => checkpoint.symbol === form.symbol,
+  ).length
+  const portfolioReturnResult = useMemo(
+    () =>
+      calculatePortfolioReturns({
+        candles: activeDailyCandles,
+        checkpoints: portfolioCheckpoints,
+        endDate: portfolioValuationDate,
+        symbol: form.symbol,
+      }),
+    [activeDailyCandles, form.symbol, portfolioCheckpoints, portfolioValuationDate],
   )
   const derivedAveragePrice = useMemo(
     () => calculateAveragePriceFromCostBasis(form.shares, form.costBasis),
@@ -325,18 +450,22 @@ function App() {
     }
 
     const timer = window.setTimeout(() => {
-      setExecutions(nextExecutions)
-      saveExecutions(nextExecutions)
+      persistProfileStoreUpdate((current) =>
+        updateProfile(current, activeProfile.id, (profile) => ({
+          ...profile,
+          executions: nextExecutions,
+        })),
+      )
     }, 0)
 
     return () => window.clearTimeout(timer)
-  }, [dailyCandles, executions, history])
+  }, [activeProfile.id, dailyCandles, executions, history, persistProfileStoreUpdate])
 
   function updateField<Key extends keyof FormState>(
     key: Key,
     value: FormState[Key],
   ) {
-    setForm((current) => ({
+    updateActiveForm((current) => ({
       ...current,
       [key]: value,
     }))
@@ -361,23 +490,24 @@ function App() {
       [symbol]: normalizedNextForm,
     }
 
-    setForm(normalizedNextForm)
-    setSymbolForms(nextSymbolForms)
+    updateActiveProfileState((profile) => ({
+      ...profile,
+      form: normalizedNextForm,
+      symbolForms: nextSymbolForms,
+    }))
     setSelectedDate(
       inferSelectedDateFromForm(
         normalizedNextForm,
         dailyCandles[normalizedNextForm.symbol] ?? [],
       ),
     )
-    saveFormState(normalizedNextForm)
-    saveSymbolFormStates(nextSymbolForms)
     setPriceMessage(
       `${symbol} 전용 상태를 불러왔습니다. T, 잔금, 보유수량, 평단은 종목별로 분리됩니다.`,
     )
   }
 
   function updateRecentClose(index: number, value: string) {
-    setForm((current) => {
+    updateActiveForm((current) => {
       const recentCloses = [...current.recentCloses]
       recentCloses[index] = value
 
@@ -409,18 +539,15 @@ function App() {
       result: nextResult,
       title: '생성 주문',
     })
-    setHistory(nextHistory)
+    replaceActiveHistory(nextHistory)
     setHistoryPage(1)
-    persistFormState(form)
-    saveHistory(nextHistory)
   }
 
   function handleRestore(snapshot: OrderSnapshot) {
     const nextInput = snapshot.input
 
-    setForm(nextInput)
+    replaceActiveForm(nextInput)
     setSelectedDate(snapshot.referenceDate ?? '')
-    persistFormState(nextInput)
     setPriceMessage(`${snapshot.input.symbol} 저장 기록의 입력값을 불러왔습니다.`)
     setNoticeModal({
       details: [
@@ -476,9 +603,8 @@ function App() {
         ...executions,
       ].slice(0, EXECUTION_RECORD_LIMIT)
 
-      setExecutions(nextExecutions)
+      replaceActiveExecutions(nextExecutions)
       setExecutionPage(1)
-      saveExecutions(nextExecutions)
     }
 
     const executionRecordDetail =
@@ -488,9 +614,8 @@ function App() {
           ? '체결 목록은 이미 추가되어 중복 등록하지 않음'
           : '체결된 주문 없음'
 
-    setForm(nextInput)
+    replaceActiveForm(nextInput)
     setSelectedDate(preview.executionCandle.date)
-    persistFormState(nextInput)
     setPriceMessage(
       `${snapshot.input.symbol} ${preview.executionCandle.date} 종가 기준 T ${formatNumber(
         preview.calculation.previousTurn,
@@ -552,9 +677,8 @@ function App() {
         ...executions,
       ].slice(0, EXECUTION_RECORD_LIMIT)
 
-      setExecutions(nextExecutions)
+      replaceActiveExecutions(nextExecutions)
       setExecutionPage(1)
-      saveExecutions(nextExecutions)
     }
 
     const duplicateCount = executionRecords.length - newExecutionRecords.length
@@ -603,49 +727,44 @@ function App() {
   function handleReset() {
     const nextForm = createDefaultFormForSymbol(form.symbol)
 
-    setForm(nextForm)
+    replaceActiveForm(nextForm)
     setSelectedDate('')
     setResultModal(null)
     setNoticeModal(null)
-    persistFormState(nextForm)
   }
 
   function handleClearHistory() {
-    setHistory([])
+    replaceActiveHistory([])
     setHistoryPage(1)
-    saveHistory([])
   }
 
   function handleDeleteHistoryItem(snapshotId: string) {
     const nextHistory = history.filter((snapshot) => snapshot.id !== snapshotId)
 
-    setHistory(nextHistory)
+    replaceActiveHistory(nextHistory)
     setHistoryPage((currentPage) =>
       Math.min(
         currentPage,
         Math.max(1, Math.ceil(nextHistory.length / HISTORY_PAGE_SIZE)),
       ),
     )
-    saveHistory(nextHistory)
   }
 
   function handleDeleteExecution(recordId: string) {
     const nextExecutions = executions.filter((record) => record.id !== recordId)
 
-    setExecutions(nextExecutions)
+    replaceActiveExecutions(nextExecutions)
     setExecutionPage((currentPage) =>
       Math.min(
         currentPage,
         Math.max(1, Math.ceil(nextExecutions.length / EXECUTION_PAGE_SIZE)),
       ),
     )
-    saveExecutions(nextExecutions)
   }
 
   function handleClearExecutions() {
-    setExecutions([])
+    replaceActiveExecutions([])
     setExecutionPage(1)
-    saveExecutions([])
   }
 
   function handleSelectDate(date: string) {
@@ -660,8 +779,7 @@ function App() {
     const nextForm = applyCandleToForm(form, sortedCandles, selectedCandle)
 
     setSelectedDate(selectedCandle.date)
-    setForm(nextForm)
-    persistFormState(nextForm)
+    replaceActiveForm(nextForm)
     setPriceMessage(
       `${selectedCandle.date} 종가 ${formatCurrency(
         selectedCandle.close,
@@ -672,19 +790,115 @@ function App() {
     )
   }
 
-  function persistFormState(nextForm: FormState) {
-    const nextSymbolForms = {
-      ...symbolForms,
-      [nextForm.symbol]: nextForm,
-    }
-
-    setSymbolForms(nextSymbolForms)
-    saveFormState(nextForm)
-    saveSymbolFormStates(nextSymbolForms)
-  }
-
   function handleRefreshYfinanceJson() {
     void refreshYfinanceData()
+  }
+
+  function commitProfileStore(nextStore: ProfileStore) {
+    setProfileStore(nextStore)
+    saveProfileStore(nextStore)
+  }
+
+  function resetViewForProfile(profile: Profile) {
+    setSelectedDate(
+      inferSelectedDateFromForm(
+        profile.form,
+        dailyCandles[profile.form.symbol] ?? [],
+      ),
+    )
+    setHistoryPage(1)
+    setExecutionPage(1)
+    setResultModal(null)
+    setNoticeModal(null)
+  }
+
+  function handleSelectProfile(profileId: string) {
+    if (profileId === activeProfile.id) {
+      return
+    }
+
+    const nextStore = setActiveProfileId(profileStore, profileId)
+    const nextProfile = getActiveProfile(nextStore)
+
+    commitProfileStore(nextStore)
+    resetViewForProfile(nextProfile)
+    setPriceMessage(`${nextProfile.name} 프로필을 불러왔습니다.`)
+  }
+
+  function handleCreateProfile() {
+    const suggestedName = `프로필 ${profileStore.profiles.length + 1}`
+    const name = window.prompt('새 프로필 이름', suggestedName)
+
+    if (name === null) {
+      return
+    }
+
+    const startDateInput = window.prompt(
+      '프로필 시작일 (YYYY-MM-DD, 비워두기 가능)',
+      new Date().toISOString().slice(0, 10),
+    )
+
+    if (startDateInput === null) {
+      return
+    }
+
+    const trimmedStartDate = startDateInput.trim()
+    const startDate = trimmedStartDate
+      ? normalizeDateInput(trimmedStartDate)
+      : ''
+
+    if (trimmedStartDate && !startDate) {
+      setNoticeModal({
+        message: '시작일은 YYYY-MM-DD 형식의 실제 날짜여야 합니다.',
+        title: '프로필을 만들지 못했습니다',
+      })
+      return
+    }
+
+    const nextStore = createProfileFromActive(profileStore, {
+      name,
+      startDate,
+    })
+    const nextProfile = getActiveProfile(nextStore)
+
+    commitProfileStore(nextStore)
+    resetViewForProfile(nextProfile)
+    setPriceMessage(`${nextProfile.name} 프로필을 만들었습니다.`)
+  }
+
+  function handleRenameProfile() {
+    const name = window.prompt('프로필 이름', activeProfile.name)
+
+    if (name === null) {
+      return
+    }
+
+    const nextStore = renameProfile(profileStore, activeProfile.id, name)
+    const nextProfile = getActiveProfile(nextStore)
+
+    commitProfileStore(nextStore)
+    setPriceMessage(`${nextProfile.name} 프로필 이름을 저장했습니다.`)
+  }
+
+  function handleDeleteProfile() {
+    if (profileStore.profiles.length <= 1) {
+      setNoticeModal({
+        message: '마지막 1개 프로필은 삭제할 수 없습니다.',
+        title: '프로필을 삭제하지 않았습니다',
+      })
+      return
+    }
+
+    if (!window.confirm(`${activeProfile.name} 프로필을 삭제할까요?`)) {
+      return
+    }
+
+    const nextStore = deleteProfile(profileStore, activeProfile.id)
+    const nextProfile = getActiveProfile(nextStore)
+
+    commitProfileStore(nextStore)
+    resetViewForProfile(nextProfile)
+    setPriceMessage(`${activeProfile.name} 프로필을 삭제했습니다.`)
   }
 
   async function refreshYfinanceData() {
@@ -722,7 +936,7 @@ function App() {
     <main className="app-shell">
       <header className="app-header">
         <div>
-          <span className="eyebrow">v1 오늘 주문 계산</span>
+          <span className="eyebrow">v2 프로필 주문 계산</span>
           <h1>라오어 무한매수 주문 계산기</h1>
         </div>
         <div className="strategy-badges" aria-label="지원 전략">
@@ -731,6 +945,15 @@ function App() {
           <span>20 / 30 / 40분할</span>
         </div>
       </header>
+
+      <ProfileSwitcher
+        activeProfile={activeProfile}
+        profiles={profileStore.profiles}
+        onCreate={handleCreateProfile}
+        onDelete={handleDeleteProfile}
+        onRename={handleRenameProfile}
+        onSelect={handleSelectProfile}
+      />
 
       <div className="workspace">
         <section className="panel input-panel unified-input-panel" aria-labelledby="input-title">
@@ -1003,148 +1226,250 @@ function App() {
         />
       ) : null}
 
-      <section className="panel price-panel" aria-labelledby="price-title">
-        <div className="panel-heading">
-          <h2 id="price-title">가격 데이터</h2>
-          <div className="history-actions">
-            <span className="panel-stat">{form.symbol}</span>
-            <span className="panel-stat">원천 {activeDailyCandles.length}일</span>
-            <span className="panel-stat">{priceIntervalLabel[priceInterval]} {visibleCandles.length}개</span>
-            <MarketStatusBadge status={activeMarketStatus} />
-          </div>
-        </div>
+      <WorkspaceTabs activeTab={workspaceTab} onChange={setWorkspaceTab} />
 
-        <div className="price-workspace">
-          <div className="chart-toolbar" aria-label="차트 제어">
-            <div className="field interval-field">
-              <span>차트 주기</span>
-              <div className="interval-control" role="group" aria-label="차트 주기">
-                {PRICE_INTERVALS.map((interval) => (
-                  <button
-                    key={interval}
-                    type="button"
-                    className={priceInterval === interval ? 'active' : ''}
-                    onClick={() => setPriceInterval(interval)}
-                  >
-                    {priceIntervalLabel[interval]}
-                  </button>
-                ))}
+      {workspaceTab === 'prices' ? (
+        <section className="panel price-panel" aria-labelledby="price-title">
+          <div className="panel-heading">
+            <h2 id="price-title">가격 데이터</h2>
+            <div className="history-actions">
+              <span className="panel-stat">{form.symbol}</span>
+              <span className="panel-stat">원천 {activeDailyCandles.length}일</span>
+              <span className="panel-stat">{priceIntervalLabel[priceInterval]} {visibleCandles.length}개</span>
+              <MarketStatusBadge status={activeMarketStatus} />
+            </div>
+          </div>
+
+          <div className="price-workspace">
+            <div className="chart-toolbar" aria-label="차트 제어">
+              <div className="field interval-field">
+                <span>차트 주기</span>
+                <div className="interval-control" role="group" aria-label="차트 주기">
+                  {PRICE_INTERVALS.map((interval) => (
+                    <button
+                      key={interval}
+                      type="button"
+                      className={priceInterval === interval ? 'active' : ''}
+                      onClick={() => setPriceInterval(interval)}
+                    >
+                      {priceIntervalLabel[interval]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="chart-selected-summary" aria-label="선택된 전일 기준일">
+                <span>전일 기준일</span>
+                <strong>
+                  {selectedDailyCandle
+                    ? `${selectedDailyCandle.date} · 주문일 ${selectedOrderDate ?? '-'}`
+                    : '-'}
+                </strong>
+              </div>
+
+              <div className="chart-data-actions">
+                <button
+                  type="button"
+                  className="secondary-action"
+                  disabled={marketDataLoading}
+                  onClick={handleRefreshYfinanceJson}
+                >
+                  yfinance 다시 불러오기
+                </button>
+                {priceMessage ? <span className="price-message">{priceMessage}</span> : null}
               </div>
             </div>
 
-            <div className="chart-selected-summary" aria-label="선택된 전일 기준일">
-              <span>전일 기준일</span>
-              <strong>
-                {selectedDailyCandle
-                  ? `${selectedDailyCandle.date} · 주문일 ${selectedOrderDate ?? '-'}`
-                  : '-'}
-              </strong>
-            </div>
-
-            <div className="chart-data-actions">
-              <button
-                type="button"
-                className="secondary-action"
-                disabled={marketDataLoading}
-                onClick={handleRefreshYfinanceJson}
-              >
-                yfinance 다시 불러오기
-              </button>
-              {priceMessage ? <span className="price-message">{priceMessage}</span> : null}
-            </div>
+            <CandlestickChart
+              candles={visibleCandles}
+              intervalLabel={priceIntervalLabel[priceInterval]}
+              onSelectDate={handleSelectDate}
+              selectedDate={effectiveSelectedDate}
+              symbol={form.symbol}
+            />
           </div>
 
-          <CandlestickChart
+          <DailyPriceTable
             candles={visibleCandles}
             intervalLabel={priceIntervalLabel[priceInterval]}
+            key={`${form.symbol}-${priceInterval}`}
             onSelectDate={handleSelectDate}
             selectedDate={effectiveSelectedDate}
-            symbol={form.symbol}
           />
-        </div>
+        </section>
+      ) : null}
 
-        <DailyPriceTable
-          candles={visibleCandles}
-          intervalLabel={priceIntervalLabel[priceInterval]}
-          key={`${form.symbol}-${priceInterval}`}
-          onSelectDate={handleSelectDate}
-          selectedDate={effectiveSelectedDate}
+      {workspaceTab === 'returns' ? (
+        <PortfolioReturnChart
+          checkpointCount={portfolioCheckpointCount}
+          result={portfolioReturnResult}
+          symbol={form.symbol}
         />
-      </section>
+      ) : null}
 
-      <section className="panel history-panel" aria-labelledby="history-title">
-        <div className="panel-heading">
-          <h2 id="history-title">저장된 주문 기록</h2>
-          <div className="history-actions">
-            <span className="panel-stat">
-              최근 {history.length}개 · {currentHistoryPage} / {historyPageCount}
-            </span>
-            <button type="button" className="text-action" onClick={handleClearHistory}>
-              비우기
-            </button>
-          </div>
-        </div>
-
-        {history.length === 0 ? (
-          <div className="empty-state">저장된 기록 없음</div>
-        ) : (
-          <>
-            <HistoryPagination
-              currentPage={currentHistoryPage}
-              pageCount={historyPageCount}
-              pageEnd={Math.min(historyPageStart + HISTORY_PAGE_SIZE, history.length)}
-              pageStart={historyPageStart + 1}
-              totalCount={history.length}
-              onPageChange={setHistoryPage}
-            />
-            <div className="history-list">
-              {historyPageRows.map((snapshot) => {
-                const candles = dailyCandles[snapshot.input.symbol] ?? []
-                const preview = getNextTurnPreview(snapshot, candles)
-                const profitLoss = getHistoryProfitLoss(snapshot, candles, preview)
-
-                return (
-                  <HistoryItem
-                    key={snapshot.id}
-                    defaultGainPercent={DEFAULT_FORM.gainPercent}
-                    onApplyNextTurn={handleApplyNextTurn}
-                    onDelete={handleDeleteHistoryItem}
-                    onRestore={handleRestore}
-                    onShowOrders={handleShowHistoryOrders}
-                    preview={preview}
-                    profitLoss={profitLoss}
-                    snapshot={snapshot}
-                  />
-                )
-              })}
+      {workspaceTab === 'history' ? (
+        <section className="panel history-panel" aria-labelledby="history-title">
+          <div className="panel-heading">
+            <h2 id="history-title">저장된 주문 기록</h2>
+            <div className="history-actions">
+              <span className="panel-stat">
+                최근 {history.length}개 · {currentHistoryPage} / {historyPageCount}
+              </span>
+              <button type="button" className="text-action" onClick={handleClearHistory}>
+                비우기
+              </button>
             </div>
-          </>
-        )}
-      </section>
+          </div>
 
-      <ExecutionLedgerSection
-        currentPage={executionPage}
-        historyCount={history.length}
-        records={executions}
-        onApplyAll={handleApplyAllHistoryExecutions}
-        onClear={handleClearExecutions}
-        onDelete={handleDeleteExecution}
-        onPageChange={setExecutionPage}
-      />
+          {history.length === 0 ? (
+            <div className="empty-state">저장된 기록 없음</div>
+          ) : (
+            <>
+              <HistoryPagination
+                currentPage={currentHistoryPage}
+                pageCount={historyPageCount}
+                pageEnd={Math.min(historyPageStart + HISTORY_PAGE_SIZE, history.length)}
+                pageStart={historyPageStart + 1}
+                totalCount={history.length}
+                onPageChange={setHistoryPage}
+              />
+              <div className="history-list">
+                {historyPageRows.map((snapshot) => {
+                  const candles = dailyCandles[snapshot.input.symbol] ?? []
+                  const preview = getNextTurnPreview(snapshot, candles)
+                  const profitLoss = getHistoryProfitLoss(snapshot, candles, preview)
 
-      <ExecutionAnalysisSection
-        endDate={executionAnalysisEndDate}
-        records={executions}
-        startDate={executionAnalysisStartDate}
-        symbol={form.symbol}
-        onEndDateChange={setExecutionAnalysisEndDate}
-        onResetPeriod={() => {
-          setExecutionAnalysisStartDate('')
-          setExecutionAnalysisEndDate('')
-        }}
-        onStartDateChange={setExecutionAnalysisStartDate}
-      />
+                  return (
+                    <HistoryItem
+                      key={snapshot.id}
+                      defaultGainPercent={DEFAULT_FORM.gainPercent}
+                      onApplyNextTurn={handleApplyNextTurn}
+                      onDelete={handleDeleteHistoryItem}
+                      onRestore={handleRestore}
+                      onShowOrders={handleShowHistoryOrders}
+                      preview={preview}
+                      profitLoss={profitLoss}
+                      snapshot={snapshot}
+                    />
+                  )
+                })}
+              </div>
+            </>
+          )}
+        </section>
+      ) : null}
+
+      {workspaceTab === 'executions' ? (
+        <ExecutionLedgerSection
+          currentPage={executionPage}
+          historyCount={history.length}
+          records={executions}
+          onApplyAll={handleApplyAllHistoryExecutions}
+          onClear={handleClearExecutions}
+          onDelete={handleDeleteExecution}
+          onPageChange={setExecutionPage}
+        />
+      ) : null}
+
+      {workspaceTab === 'analysis' ? (
+        <ExecutionAnalysisSection
+          endDate={executionAnalysisEndDate}
+          records={executions}
+          startDate={executionAnalysisStartDate}
+          symbol={form.symbol}
+          onEndDateChange={setExecutionAnalysisEndDate}
+          onResetPeriod={resetExecutionAnalysisPeriod}
+          onStartDateChange={setExecutionAnalysisStartDate}
+        />
+      ) : null}
     </main>
+  )
+}
+
+function WorkspaceTabs({
+  activeTab,
+  onChange,
+}: {
+  activeTab: WorkspaceTab
+  onChange: (tab: WorkspaceTab) => void
+}) {
+  return (
+    <nav className="workspace-tabs" aria-label="작업 영역 탭">
+      {workspaceTabs.map((tab) => (
+        <button
+          key={tab.id}
+          type="button"
+          aria-current={activeTab === tab.id ? 'page' : undefined}
+          className={activeTab === tab.id ? 'active' : ''}
+          onClick={() => onChange(tab.id)}
+        >
+          {tab.label}
+        </button>
+      ))}
+    </nav>
+  )
+}
+
+function ProfileSwitcher({
+  activeProfile,
+  onCreate,
+  onDelete,
+  onRename,
+  onSelect,
+  profiles,
+}: {
+  activeProfile: Profile
+  onCreate: () => void
+  onDelete: () => void
+  onRename: () => void
+  onSelect: (profileId: string) => void
+  profiles: Profile[]
+}) {
+  return (
+    <section className="profile-switcher" aria-label="프로필 관리">
+      <div className="profile-current">
+        <span>활성 프로필</span>
+        <strong>{activeProfile.name}</strong>
+      </div>
+
+      <div className="profile-facts" aria-label="프로필 요약">
+        <span>시작일 {activeProfile.startDate || '-'}</span>
+        <span>{activeProfile.form.symbol}</span>
+        <span>{activeProfile.form.splitCount}분할</span>
+        <span>목표 {activeProfile.form.gainPercent || '-'}%</span>
+      </div>
+
+      <div className="profile-controls">
+        <label className="field profile-select-field" htmlFor="profile-select">
+          <span>프로필</span>
+          <select
+            id="profile-select"
+            value={activeProfile.id}
+            onChange={(event) => onSelect(event.target.value)}
+          >
+            {profiles.map((profile) => (
+              <option key={profile.id} value={profile.id}>
+                {profile.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button type="button" className="secondary-action" onClick={onCreate}>
+          새 프로필
+        </button>
+        <button type="button" className="secondary-action" onClick={onRename}>
+          이름변경
+        </button>
+        <button
+          type="button"
+          className="danger-action"
+          disabled={profiles.length <= 1}
+          onClick={onDelete}
+        >
+          삭제
+        </button>
+      </div>
+    </section>
   )
 }
 
@@ -1837,74 +2162,10 @@ function formToState(form: FormState): StrategyState {
   }
 }
 
-function loadFormState(): FormState {
-  const saved = readStorage(STORAGE_INPUT_KEY)
-  return normalizeFormState(saved)
-}
-
-function saveFormState(form: FormState) {
-  writeStorage(STORAGE_INPUT_KEY, form)
-}
-
-function loadSymbolFormStates(
-  activeForm: FormState,
-): Record<StrategySymbol, FormState> {
-  const saved = readStorage(STORAGE_SYMBOL_INPUTS_KEY)
-  const forms = Object.fromEntries(
-    symbolOptions.map((symbol) => [symbol, createDefaultFormForSymbol(symbol)]),
-  ) as Record<StrategySymbol, FormState>
-
-  if (isRecord(saved)) {
-    for (const symbol of symbolOptions) {
-      if (isRecord(saved[symbol])) {
-        forms[symbol] = normalizeFormState({
-          ...saved[symbol],
-          symbol,
-        })
-      }
-    }
-  }
-
-  forms[activeForm.symbol] = normalizeFormState(activeForm)
-
-  return forms
-}
-
-function saveSymbolFormStates(forms: Record<StrategySymbol, FormState>) {
-  writeStorage(STORAGE_SYMBOL_INPUTS_KEY, forms)
-}
-
-function loadHistory(): OrderSnapshot[] {
-  const saved = readStorage(STORAGE_HISTORY_KEY)
-
-  if (!Array.isArray(saved)) {
-    return []
-  }
-
-  return saved.flatMap(normalizeOrderSnapshot).slice(0, 50)
-}
-
-function saveHistory(history: OrderSnapshot[]) {
-  writeStorage(STORAGE_HISTORY_KEY, history)
-}
-
-function loadExecutions(): ExecutionRecord[] {
-  const saved = readStorage(STORAGE_EXECUTIONS_KEY)
-
-  if (!Array.isArray(saved)) {
-    return []
-  }
-
-  return saved.flatMap(normalizeExecutionRecord).slice(0, EXECUTION_RECORD_LIMIT)
-}
-
-function saveExecutions(records: ExecutionRecord[]) {
-  writeStorage(STORAGE_EXECUTIONS_KEY, records)
-}
-
 function createExecutionRecordsFromPreview(
   snapshot: OrderSnapshot,
   preview: NextTurnPreview,
+  options: { createdAt?: string; idPrefix?: string } = {},
 ): ExecutionRecord[] {
   if (!preview.calculation || !preview.executionCandle) {
     return []
@@ -1913,7 +2174,7 @@ function createExecutionRecordsFromPreview(
   const calculation = preview.calculation
   const executedTags = new Set(preview.calculation.executedOrderTags)
   const executionCandle = preview.executionCandle
-  const createdAt = new Date().toISOString()
+  const createdAt = options.createdAt ?? new Date().toISOString()
 
   return snapshot.result.orders.flatMap((order) => {
     if (!executedTags.has(order.tag)) {
@@ -1941,7 +2202,9 @@ function createExecutionRecordsFromPreview(
     return [
       {
         averagePriceAfter: calculation.nextAveragePrice,
-        id: createSnapshotId(),
+        id: options.idPrefix
+          ? `${options.idPrefix}:${order.id}`
+          : createSnapshotId(),
         createdAt,
         date: executionCandle.date,
         feeAmount: amounts.feeAmount,
@@ -1986,211 +2249,6 @@ function getExecutionSourceKey(record: ExecutionRecord): string | undefined {
   }
 
   return `${record.sourceSnapshotId}:${record.sourceOrderId}`
-}
-
-function normalizeExecutionRecord(value: unknown): ExecutionRecord[] {
-  if (!isRecord(value)) {
-    return []
-  }
-
-  const date = normalizeDateInput(stringifyInput(value.date, ''))
-  const symbol = isStrategySymbol(value.symbol) ? value.symbol : undefined
-  const side = normalizeExecutionSide(value.side)
-  const price = parseUnknownNumber(value.price)
-  const quantity = parseUnknownNumber(value.quantity)
-
-  if (!date || !symbol || !side || price <= 0 || quantity <= 0) {
-    return []
-  }
-
-  const feeRate = Math.max(0, parseUnknownNumber(value.feeRate))
-  const amounts = calculateExecutionAmounts(side, price, quantity, feeRate)
-  const averagePriceAfter = parseOptionalUnknownNumber(value.averagePriceAfter)
-  const sharesAfter = parseOptionalUnknownNumber(value.sharesAfter)
-
-  return [
-    {
-      averagePriceAfter:
-        typeof averagePriceAfter === 'number' && averagePriceAfter > 0
-          ? roundMoney(averagePriceAfter)
-          : undefined,
-      id: typeof value.id === 'string' ? value.id : createSnapshotId(),
-      createdAt:
-        typeof value.createdAt === 'string'
-          ? value.createdAt
-          : new Date().toISOString(),
-      date,
-      feeAmount: amounts.feeAmount,
-      feeRate,
-      grossAmount: amounts.grossAmount,
-      netCashFlow: amounts.netCashFlow,
-      note: typeof value.note === 'string' && value.note.trim()
-        ? value.note.trim()
-        : undefined,
-      price: roundMoney(price),
-      quantity: roundQuantity(quantity),
-      side,
-      sharesAfter:
-        typeof sharesAfter === 'number' && sharesAfter >= 0
-          ? roundQuantity(sharesAfter)
-          : undefined,
-      sourceOrderId:
-        typeof value.sourceOrderId === 'string'
-          ? value.sourceOrderId
-          : undefined,
-      sourceSnapshotId:
-        typeof value.sourceSnapshotId === 'string'
-          ? value.sourceSnapshotId
-          : undefined,
-      symbol,
-    },
-  ]
-}
-
-function normalizeFormState(value: unknown): FormState {
-  const source = isRecord(value) ? value : {}
-  const symbol = isStrategySymbol(source.symbol) ? source.symbol : DEFAULT_FORM.symbol
-  const splitCount = isSplitCount(source.splitCount)
-    ? source.splitCount
-    : DEFAULT_FORM.splitCount
-  const recentCloses = Array.isArray(source.recentCloses)
-    ? source.recentCloses
-    : DEFAULT_FORM.recentCloses
-
-  return {
-    symbol,
-    splitCount,
-    gainPercent: stringifyInput(
-      source.gainPercent,
-      String(getDefaultTargetProfitPercent(symbol)),
-    ),
-    mode: isMode(source.mode) ? source.mode : DEFAULT_FORM.mode,
-    turn: stringifyInput(source.turn, DEFAULT_FORM.turn),
-    cashInputMode: normalizeCashInputMode(source),
-    cashBalance: stringifyInput(source.cashBalance, DEFAULT_FORM.cashBalance),
-    initialBudget: stringifyInput(source.initialBudget, DEFAULT_FORM.initialBudget),
-    totalBuyAmount: stringifyInput(source.totalBuyAmount, DEFAULT_FORM.totalBuyAmount),
-    shares: stringifyInput(source.shares, DEFAULT_FORM.shares),
-    averageInputMode: normalizeAverageInputMode(source),
-    costBasis: stringifyInput(source.costBasis, DEFAULT_FORM.costBasis),
-    averagePrice: stringifyInput(source.averagePrice, DEFAULT_FORM.averagePrice),
-    previousClose: stringifyInput(source.previousClose, DEFAULT_FORM.previousClose),
-    reverseDays: stringifyInput(source.reverseDays, DEFAULT_FORM.reverseDays),
-    recentCloses: Array.from({ length: 5 }, (_, index) =>
-      stringifyInput(recentCloses[index], DEFAULT_FORM.recentCloses[index] ?? ''),
-    ),
-  }
-}
-
-function normalizeOrderSnapshot(value: unknown): OrderSnapshot[] {
-  if (!isRecord(value)) {
-    return []
-  }
-
-  if (typeof value.id !== 'string' || typeof value.createdAt !== 'string') {
-    return []
-  }
-
-  if (!isRecord(value.input)) {
-    return []
-  }
-
-  const input = normalizeFormState(value.input)
-  const result = calculateFromForm(input)
-  const profitLoss =
-    normalizeProfitLossResult(value.profitLoss) ??
-    calculateSnapshotProfitLoss({
-      input,
-      result,
-    })
-
-  return [
-    {
-      id: value.id,
-      createdAt: value.createdAt,
-      referenceDate:
-        typeof value.referenceDate === 'string' ? value.referenceDate : undefined,
-      input,
-      profitLoss,
-      result,
-    },
-  ]
-}
-
-function normalizeProfitLossResult(value: unknown): ProfitLossResult | undefined {
-  if (!isRecord(value)) {
-    return undefined
-  }
-
-  const budget = parseUnknownNumber(value.budget)
-  const budgetReturnPercent = parseUnknownNumber(value.budgetReturnPercent)
-  const buyAmount = parseUnknownNumber(value.buyAmount)
-  const buyAmountReturnPercent = parseOptionalUnknownNumber(
-    value.buyAmountReturnPercent,
-  )
-  const cashBalanceAfterOrders = parseUnknownNumber(value.cashBalanceAfterOrders)
-  const executedOrderCount = parseUnknownNumber(value.executedOrderCount)
-  const markPrice = parseUnknownNumber(value.markPrice)
-  const netEquity = parseUnknownNumber(value.netEquity)
-  const positionExitFee = parseUnknownNumber(value.positionExitFee)
-  const positionValue = parseUnknownNumber(value.positionValue)
-  const remainingShares = parseUnknownNumber(value.remainingShares)
-  const totalFees = parseUnknownNumber(value.totalFees)
-  const totalProfitLoss = parseUnknownNumber(value.totalProfitLoss)
-
-  if (budget <= 0 || markPrice <= 0) {
-    return undefined
-  }
-
-  return {
-    budget,
-    budgetReturnPercent,
-    buyAmount: Math.max(0, buyAmount),
-    buyAmountReturnPercent:
-      typeof buyAmountReturnPercent === 'number'
-        ? buyAmountReturnPercent
-        : buyAmount > 0
-          ? (totalProfitLoss / buyAmount) * 100
-          : undefined,
-    cashBalanceAfterOrders,
-    executedOrderCount: Math.max(0, Math.floor(executedOrderCount)),
-    executedOrders: Array.isArray(value.executedOrders)
-      ? value.executedOrders.flatMap(normalizeExecutedProfitLossOrder)
-      : [],
-    markDate: typeof value.markDate === 'string' ? value.markDate : undefined,
-    markPrice,
-    netEquity,
-    positionExitFee,
-    positionValue,
-    remainingShares,
-    totalFees,
-    totalProfitLoss,
-  }
-}
-
-function normalizeExecutedProfitLossOrder(
-  value: unknown,
-): ExecutedProfitLossOrder[] {
-  if (!isRecord(value)) {
-    return []
-  }
-
-  const side: ExecutedProfitLossOrder['side'] | undefined =
-    value.side === 'buy' || value.side === 'sell' ? value.side : undefined
-  const label = typeof value.label === 'string' ? value.label : ''
-
-  if (!side || !label) {
-    return []
-  }
-
-  return [
-    {
-      fee: parseUnknownNumber(value.fee),
-      label,
-      notional: parseUnknownNumber(value.notional),
-      side,
-    },
-  ]
 }
 
 function normalizeMarketDataFileCandles(payload: MarketDataFile): DailyCandle[] {
@@ -2287,23 +2345,6 @@ function formatMarketStatusLabel(status?: MarketStatus): string {
   return `${calendar} ${status.date} 휴장${nextTradingDay}`
 }
 
-function readStorage(key: string): unknown {
-  try {
-    const value = window.localStorage.getItem(key)
-    return value ? JSON.parse(value) : undefined
-  } catch {
-    return undefined
-  }
-}
-
-function writeStorage(key: string, value: unknown) {
-  try {
-    window.localStorage.setItem(key, JSON.stringify(value))
-  } catch {
-    return
-  }
-}
-
 async function safeReadJson(response: Response): Promise<unknown> {
   try {
     return await response.json()
@@ -2387,19 +2428,6 @@ function parseUnknownNumber(value: unknown): number {
   return 0
 }
 
-function parseOptionalUnknownNumber(value: unknown): number | undefined {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return value
-  }
-
-  if (typeof value === 'string' && value.trim() !== '') {
-    const parsed = Number(value)
-    return Number.isFinite(parsed) ? parsed : undefined
-  }
-
-  return undefined
-}
-
 function isSamePrice(left: number, right: number): boolean {
   return Math.abs(left - right) < 0.005
 }
@@ -2473,77 +2501,6 @@ function calculateNextReverseDays(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
-}
-
-function isStrategySymbol(value: unknown): value is StrategySymbol {
-  return value === 'TQQQ' || value === 'SOXL'
-}
-
-function isSplitCount(value: unknown): value is SplitCount {
-  return SUPPORTED_SPLITS.includes(value as SplitCount)
-}
-
-function isMode(value: unknown): value is Mode {
-  return value === 'normal' || value === 'reverse'
-}
-
-function isAverageInputMode(value: unknown): value is AverageInputMode {
-  return value === 'costBasis' || value === 'averagePrice'
-}
-
-function isCashInputMode(value: unknown): value is CashInputMode {
-  return value === 'cashBalance' || value === 'budgetSpent'
-}
-
-function normalizeExecutionSide(value: unknown): ExecutionSide | undefined {
-  return value === 'buy' || value === 'sell' ? value : undefined
-}
-
-function normalizeDateInput(value: string): string | undefined {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    return undefined
-  }
-
-  const [year, month, day] = value.split('-').map(Number)
-  const parsed = new Date(Date.UTC(year, month - 1, day))
-
-  if (
-    Number.isNaN(parsed.getTime()) ||
-    parsed.getUTCFullYear() !== year ||
-    parsed.getUTCMonth() !== month - 1 ||
-    parsed.getUTCDate() !== day
-  ) {
-    return undefined
-  }
-
-  return value
-}
-
-function normalizeCashInputMode(source: Record<string, unknown>): CashInputMode {
-  if (isCashInputMode(source.cashInputMode)) {
-    return source.cashInputMode
-  }
-
-  if (
-    parseUnknownNumber(source.initialBudget) > 0 ||
-    parseUnknownNumber(source.totalBuyAmount) > 0
-  ) {
-    return 'budgetSpent'
-  }
-
-  return 'cashBalance'
-}
-
-function normalizeAverageInputMode(source: Record<string, unknown>): AverageInputMode {
-  if (isAverageInputMode(source.averageInputMode)) {
-    return source.averageInputMode
-  }
-
-  if (parseUnknownNumber(source.costBasis) > 0) {
-    return 'costBasis'
-  }
-
-  return 'averagePrice'
 }
 
 function createSnapshotId(): string {

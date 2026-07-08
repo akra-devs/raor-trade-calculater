@@ -64,6 +64,72 @@ h2 {
   font-weight: 700;
 }
 
+.profile-switcher {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.55fr) minmax(280px, 1fr) minmax(420px, 1.2fr);
+  gap: 14px;
+  align-items: end;
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.profile-current {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.profile-current span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.profile-current strong {
+  color: var(--text-strong);
+  font-size: 19px;
+  font-weight: 850;
+  overflow-wrap: anywhere;
+}
+
+.profile-facts,
+.profile-controls {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.profile-facts span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--soft);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.profile-controls {
+  justify-content: flex-end;
+}
+
+.profile-select-field {
+  flex: 1 1 180px;
+}
+
+.profile-controls button {
+  flex: 0 0 auto;
+}
+
 .market-status-stat.open {
   border-color: rgba(4, 120, 87, 0.2);
   background: var(--buy-bg);
@@ -89,6 +155,35 @@ h2 {
   min-width: 0;
   padding: 24px 0;
   align-items: start;
+}
+
+.workspace-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-bottom: 16px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  overflow-x: auto;
+}
+
+.workspace-tabs button {
+  flex: 0 0 auto;
+  min-height: 36px;
+  border-color: var(--line);
+  background: var(--soft);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.workspace-tabs button.active {
+  border-color: rgba(15, 118, 110, 0.28);
+  background: var(--focus);
+  color: #fff;
 }
 
 .panel {
@@ -762,6 +857,86 @@ button:focus-visible {
   color: var(--text-strong);
   font-size: 16px;
   overflow-wrap: anywhere;
+}
+
+.portfolio-return-panel {
+  display: grid;
+  gap: 16px;
+  margin-bottom: 32px;
+  padding: 24px 28px;
+}
+
+.portfolio-return-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.portfolio-return-chart-shell {
+  position: relative;
+  min-height: 414px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.portfolio-return-stage {
+  position: relative;
+  min-height: 360px;
+}
+
+.portfolio-return-chart {
+  width: 100%;
+  height: 360px;
+}
+
+.portfolio-return-tooltip {
+  position: absolute;
+  z-index: 4;
+  display: grid;
+  gap: 3px;
+  width: 224px;
+  min-height: 144px;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 12px 28px rgba(16, 24, 32, 0.16);
+  pointer-events: none;
+}
+
+.portfolio-return-tooltip span,
+.portfolio-return-tooltip small {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+  overflow-wrap: anywhere;
+}
+
+.portfolio-return-tooltip strong {
+  color: var(--text-strong);
+  font-size: 16px;
+  font-weight: 900;
+}
+
+.portfolio-return-tooltip em {
+  font-size: 14px;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.portfolio-return-tooltip.positive em {
+  color: var(--buy);
+}
+
+.portfolio-return-tooltip.negative em {
+  color: var(--sell);
+}
+
+.portfolio-return-tooltip.neutral em {
+  color: var(--muted);
 }
 
 .warning-list {
@@ -1475,6 +1650,7 @@ button:focus-visible {
   }
 
   .form-grid,
+  .portfolio-return-summary,
   .summary-grid {
     grid-template-columns: 1fr 1fr;
   }
@@ -1526,6 +1702,14 @@ button:focus-visible {
 
   .chart-toolbar {
     grid-template-columns: 1fr;
+  }
+
+  .profile-switcher {
+    grid-template-columns: 1fr;
+  }
+
+  .profile-controls {
+    justify-content: flex-start;
   }
 
   .chart-legend {
@@ -1593,6 +1777,7 @@ button:focus-visible {
 
 @media (max-width: 520px) {
   .form-grid,
+  .portfolio-return-summary,
   .summary-grid,
   .execution-summary-grid,
   .analysis-primary-grid,
@@ -1679,9 +1864,37 @@ button:focus-visible {
   .analysis-controls button {
     width: 100%;
   }
+
+  .profile-controls {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .profile-select-field {
+    grid-column: 1 / -1;
+  }
+
+  .profile-controls button {
+    width: 100%;
+  }
+
+  .workspace-tabs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    overflow-x: visible;
+  }
+
+  .workspace-tabs button {
+    width: 100%;
+    white-space: normal;
+  }
 }
 
 @media (max-width: 360px) {
+  .workspace-tabs {
+    grid-template-columns: 1fr;
+  }
+
   .chart-legend-indicators {
     grid-template-columns: 1fr;
   }

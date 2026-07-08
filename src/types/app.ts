@@ -1,4 +1,5 @@
 import type { DailyCandle } from '../domain/dailyPrices'
+import type { ExecutionRecord } from '../domain/executions'
 import type { ProfitLossResult } from '../domain/profitLoss'
 import type {
   GenerateOrdersResult,
@@ -37,6 +38,25 @@ export interface OrderSnapshot {
   input: FormState
   profitLoss?: ProfitLossResult
   result: GenerateOrdersResult
+}
+
+export interface Profile {
+  id: string
+  name: string
+  createdAt: string
+  updatedAt: string
+  startDate: string
+  form: FormState
+  symbolForms: Record<StrategySymbol, FormState>
+  history: OrderSnapshot[]
+  executions: ExecutionRecord[]
+  executionAnalysisStartDate: string
+  executionAnalysisEndDate: string
+}
+
+export interface ProfileStore {
+  activeProfileId: string
+  profiles: Profile[]
 }
 
 export interface NextTurnPreview {
